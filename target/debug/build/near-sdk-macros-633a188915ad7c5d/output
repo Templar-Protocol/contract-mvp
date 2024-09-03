@@ -1,0 +1,1 @@
+cargo:rustc-check-cfg=cfg(feature, values("__abi-embed-checked"))
