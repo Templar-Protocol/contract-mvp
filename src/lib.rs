@@ -1,8 +1,10 @@
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
-use near_sdk::collections::{LookupMap, UnorderedSet};
+use near_sdk::collections::LazyOption;
 use near_sdk::json_types::U128;
-use near_sdk::{env, near_bindgen, AccountId, Balance, Promise, Gas, PromiseOrValue};
-use near_contract_standards::non_fungible_token::TokenId;
+use near_sdk::serde::{Serialize, Deserialize};
+use near_sdk::store::{LookupMap, UnorderedSet};
+use near_sdk::{env, ext_contract, near_bindgen, AccountId, Balance, Promise, Gas, PromiseOrValue};
+use near_contract_standards::non_fungible_token::{Token, TokenId};
 use near_contract_standards::non_fungible_token::metadata::{
     NFTContractMetadata, NonFungibleTokenMetadataProvider, TokenMetadata, NFT_METADATA_SPEC,
 };
@@ -13,11 +15,11 @@ use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
 near_sdk::setup_alloc!();
 
 const NFT_MINT_FEE: Balance = 1_000_000_000_000_000_000_000_000; // 1 NEAR
-const GAS_FOR_NFT_MINT: Gas = Gas(50_000_000_000_000);
-const GAS_FOR_FT_TRANSFER: Gas = Gas(10_000_000_000_000);
+const GAS_FOR_NFT_MINT: Gas = Gas::from_gas(50_000_000_000_000);
+const GAS_FOR_FT_TRANSFER: Gas = Gas::from_gas(10_000_000_000_000);
 
 #[near_bindgen]
-#[derive(BorshDeserialize, BorshSerialize)]
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize)]
 pub struct TemplarProtocol {
     vaults: LookupMap<String, Vault>,
     nft_collections: LookupMap<String, AccountId>,
@@ -26,7 +28,7 @@ pub struct TemplarProtocol {
     metadata: LazyOption<NFTContractMetadata>,
 }
 
-#[derive(BorshDeserialize, BorshSerialize)]
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize)]
 pub struct Vault {
     collateral_asset: AccountId,
     stablecoin: AccountId,
@@ -36,7 +38,7 @@ pub struct Vault {
     min_collateral_ratio: u64,
 }
 
-#[derive(BorshDeserialize, BorshSerialize)]
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize)]
 pub struct Loan {
     collateral_amount: Balance,
     borrowed_amount: Balance,
