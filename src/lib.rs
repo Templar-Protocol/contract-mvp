@@ -1,63 +1,64 @@
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
-use near_sdk::collections::LazyOption;
+use near_sdk::collections::{LazyOption, LookupMap, UnorderedMap};
 use near_sdk::json_types::U128;
-use near_sdk::serde::{Serialize, Deserialize};
-use near_sdk::store::{LookupMap, UnorderedSet};
-use near_sdk::{env, ext_contract, near_bindgen, AccountId, Balance, Promise, Gas, PromiseOrValue};
-use near_contract_standards::non_fungible_token::{Token, TokenId};
+use near_sdk::serde::{Deserialize, Serialize};
+use near_sdk::{
+    env, near_bindgen, AccountId, BorshStorageKey, PanicOnDefault, Promise, PromiseOrValue,
+    NearToken, Gas,
+};
+
+use near_contract_standards::fungible_token::Balance;
+use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
+use near_contract_standards::non_fungible_token::{Token, TokenId, NonFungibleToken, NonFungibleTokenCore, NonFungibleTokenEnumeration};
+use near_contract_standards::non_fungible_token::core::{NonFungibleTokenResolver, NonFungibleTokenApproval};
 use near_contract_standards::non_fungible_token::metadata::{
     NFTContractMetadata, NonFungibleTokenMetadataProvider, TokenMetadata, NFT_METADATA_SPEC,
 };
-use near_contract_standards::non_fungible_token::NonFungibleToken;
-use near_contract_standards::non_fungible_token::mint::NonFungibleTokenMint;
-use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
 
-near_sdk::setup_alloc!();
+use near_sdk::serde_json;
 
-const NFT_MINT_FEE: Balance = 1_000_000_000_000_000_000_000_000; // 1 NEAR
-const GAS_FOR_NFT_MINT: Gas = Gas::from_gas(50_000_000_000_000);
-const GAS_FOR_FT_TRANSFER: Gas = Gas::from_gas(10_000_000_000_000);
+
+const NFT_MINT_FEE: u128 = 1_000_000_000_000_000_000_000_000; // 1 NEAR
+
+#[derive(BorshSerialize, BorshStorageKey)]
+enum StorageKey {
+    NonFungibleToken,
+    Metadata,
+    TokenMetadata,
+    Enumeration,
+    Approval,
+    Vaults,
+    NftCollections,
+    Invites,
+}
 
 #[near_bindgen]
-#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize)]
+#[derive(BorshDeserialize, BorshSerialize, PanicOnDefault)]
 pub struct TemplarProtocol {
     vaults: LookupMap<String, Vault>,
-    nft_collections: LookupMap<String, AccountId>,
+    nft_collections: UnorderedMap<String, AccountId>,
     invites: LookupMap<String, String>,
     nft: NonFungibleToken,
     metadata: LazyOption<NFTContractMetadata>,
 }
 
 #[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub struct Vault {
     collateral_asset: AccountId,
     stablecoin: AccountId,
-    collateral_balance: Balance,
-    stablecoin_balance: Balance,
-    loans: LookupMap<AccountId, Loan>,
+    collateral_balance: u128,
+    stablecoin_balance: u128,
+    loans: Vec<AccountId>,
     min_collateral_ratio: u64,
+    debt: Balance,
 }
 
 #[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub struct Loan {
-    collateral_amount: Balance,
-    borrowed_amount: Balance,
-}
-
-impl Default for TemplarProtocol {
-    fn default() -> Self {
-        Self {
-            vaults: LookupMap::new(b"v"),
-            nft_collections: LookupMap::new(b"n"),
-            invites: LookupMap::new(b"i"),
-            nft: NonFungibleToken::new(
-                b"nft".to_vec(),
-                env::current_account_id(),
-                Some(env::current_account_id()),
-            ),
-            metadata: LazyOption::new(b"m", None),
-        }
-    }
+    collateral_amount: u128,
+    borrowed_amount: u128,
 }
 
 #[near_bindgen]
@@ -74,9 +75,19 @@ impl TemplarProtocol {
             reference: None,
             reference_hash: None,
         };
-        let mut this = Self::default();
-        this.metadata.set(&metadata);
-        this
+        Self {
+            vaults: LookupMap::new(StorageKey::Vaults),
+            nft_collections: UnorderedMap::new(StorageKey::NftCollections),
+            invites: LookupMap::new(StorageKey::Invites),
+            nft: NonFungibleToken::new(
+                StorageKey::NonFungibleToken,
+                env::current_account_id(),
+                Some(StorageKey::TokenMetadata),
+                Some(StorageKey::Enumeration),
+                Some(StorageKey::Approval),
+            ),
+            metadata: LazyOption::new(StorageKey::Metadata, Some(&metadata)),
+        }
     }
 
     #[payable]
@@ -90,91 +101,71 @@ impl TemplarProtocol {
             stablecoin,
             collateral_balance: 0,
             stablecoin_balance: 0,
-            loans: LookupMap::new(vault_id.as_bytes()),
+            loans: Vec::new(),
             min_collateral_ratio,
+            debt: 0,
         };
 
-        self.vaults.insert(&vault_id, &vault);
+        self.vaults.insert(&vault_id.to_string(), &vault);
         self.nft_collections.insert(&nft_collection.to_string(), &nft_collection);
     }
 
     #[payable]
-    pub fn deposit_stablecoin(&mut self, vault_id: String, amount: U128) {
-        let mut vault = self.vaults.get(&vault_id).expect("Vault not found");
+    pub fn deposit_stablecoin(&mut self, vault_id: String, amount: U128) -> Promise {
+        let vault = self.vaults.get(&vault_id).expect("Vault not found");
         let nft_collection = self.get_nft_collection_for_vault(&vault_id);
-        assert!(self.owns_nft(&env::predecessor_account_id(), &nft_collection), "Not authorized");
+        assert!(self.owns_nft(&env::predecessor_account_id(), nft_collection.as_str()), "Not authorized");
 
-        ext_fungible_token::ft_transfer_call(
-            env::current_account_id(),
-            amount,
-            None,
-            "Deposit to Templar Protocol".to_string(),
-            &vault.stablecoin,
-            1,
-            GAS_FOR_FT_TRANSFER,
+        Promise::new(vault.stablecoin.clone()).function_call(
+            "ft_transfer_call".to_string(),
+            serde_json::to_vec(&serde_json::json!({
+                "receiver_id": env::current_account_id(),
+                "amount": amount,
+                "msg": format!("deposit:{}", vault_id)
+            })).unwrap(),
+            NearToken::from_yoctonear(1),
+            Gas::from_tgas(10),
         )
-        .then(ext_self::callback_deposit_stablecoin(
-            vault_id,
-            amount,
-            env::predecessor_account_id(),
-            &env::current_account_id(),
-            0,
-            GAS_FOR_FT_TRANSFER,
-        ));
     }
 
-    pub fn borrow(&mut self, vault_id: String, collateral_amount: U128, borrow_amount: U128) {
+    pub fn borrow(&mut self, vault_id: String, collateral_amount: U128, borrow_amount: U128) -> Promise {
         let mut vault = self.vaults.get(&vault_id).expect("Vault not found");
         let nft_collection = self.get_nft_collection_for_vault(&vault_id);
-        assert!(self.owns_nft(&env::predecessor_account_id(), &nft_collection), "Not authorized");
+        assert!(self.owns_nft(&env::predecessor_account_id(), nft_collection.as_str()), "Not authorized");
 
         assert!(vault.stablecoin_balance >= borrow_amount.0, "Insufficient liquidity");
 
-        let mut loan = vault.loans.get(&env::predecessor_account_id()).unwrap_or(Loan {
-            collateral_amount: 0,
-            borrowed_amount: 0,
-        });
-
-        let new_collateral = loan.collateral_amount + collateral_amount.0;
-        let new_borrowed = loan.borrowed_amount + borrow_amount.0;
-
-        assert!(
-            new_collateral * 100 / new_borrowed >= vault.min_collateral_ratio as u128,
-            "Collateral ratio too low"
-        );
-
-        loan.collateral_amount = new_collateral;
-        loan.borrowed_amount = new_borrowed;
-
         vault.collateral_balance += collateral_amount.0;
         vault.stablecoin_balance -= borrow_amount.0;
+        vault.loans.push(env::predecessor_account_id());
 
-        vault.loans.insert(&env::predecessor_account_id(), &loan);
         self.vaults.insert(&vault_id, &vault);
 
-        ext_fungible_token::ft_transfer_call(
-            env::current_account_id(),
-            collateral_amount,
-            None,
-            "Collateral deposit to Templar Protocol".to_string(),
-            &vault.collateral_asset,
-            1,
-            GAS_FOR_FT_TRANSFER,
+        Promise::new(vault.collateral_asset.clone()).function_call(
+            "ft_transfer_call".to_string(),
+            serde_json::to_vec(&serde_json::json!({
+                "receiver_id": env::current_account_id(),
+                "amount": collateral_amount,
+                "msg": format!("collateral:{}", vault_id)
+            })).unwrap(),
+            NearToken::from_yoctonear(1),
+            Gas::from_tgas(10),
+        ).then(
+            Promise::new(vault.stablecoin.clone()).function_call(
+                "ft_transfer".to_string(),
+                serde_json::to_vec(&serde_json::json!({
+                    "receiver_id": env::predecessor_account_id(),
+                    "amount": borrow_amount,
+                })).unwrap(),
+                NearToken::from_yoctonear(1),
+                Gas::from_tgas(10),
+            )
         )
-        .then(ext_fungible_token::ft_transfer(
-            env::predecessor_account_id(),
-            borrow_amount,
-            None,
-            &vault.stablecoin,
-            1,
-            GAS_FOR_FT_TRANSFER,
-        ));
     }
 
     pub fn create_invite(&mut self, nft_collection: AccountId) -> String {
         assert!(self.nft_collections.contains_key(&nft_collection.to_string()), "NFT collection not found");
-        let invite_code = env::sha256(env::random_seed().as_slice());
-        let invite_code = hex::encode(&invite_code);
+        let invite_code = hex::encode(env::sha256(&env::random_seed()));
         self.invites.insert(&invite_code, &nft_collection.to_string());
         invite_code
     }
@@ -185,17 +176,17 @@ impl TemplarProtocol {
         let nft_collection = self.invites.get(&invite_code).expect("Invalid invite code");
         assert!(!self.owns_nft(&env::predecessor_account_id(), &nft_collection), "Already a member");
 
-        let token_id = (self.nft.token_metadata_by_id.len() + 1).to_string();
+        let token_id = (self.nft.nft_total_supply().0 + 1).to_string();
         self.nft.internal_mint(token_id.clone(), env::predecessor_account_id(), Some(token_metadata));
 
         self.invites.remove(&invite_code);
 
-        self.nft.token_metadata_by_id.get(&token_id).unwrap()
+        self.nft.nft_token(&token_id).unwrap()
     }
 
     fn get_nft_collection_for_vault(&self, vault_id: &str) -> AccountId {
         for (collection, account_id) in self.nft_collections.iter() {
-            if self.vaults.get(vault_id).is_some() {
+            if self.vaults.get(&vault_id.to_string()).is_some() {
                 return account_id;
             }
         }
@@ -203,8 +194,7 @@ impl TemplarProtocol {
     }
 
     fn owns_nft(&self, account_id: &AccountId, nft_collection: &str) -> bool {
-        let tokens = self.nft.tokens_per_owner.get(account_id);
-        tokens.is_some() && !tokens.unwrap().is_empty()
+        self.nft_collections.get(&nft_collection.to_string()).expect("NFT collection not found") == *account_id
     }
 }
 
@@ -231,31 +221,116 @@ impl NonFungibleTokenMetadataProvider for TemplarProtocol {
     }
 }
 
-#[near_bindgen]
-impl NonFungibleTokenMint for TemplarProtocol {
-    #[payable]
-    fn nft_mint(&mut self, token_id: TokenId, token_owner_id: AccountId, token_metadata: TokenMetadata) -> Token {
-        assert!(env::attached_deposit() >= NFT_MINT_FEE, "Not enough deposit to mint NFT");
-        self.nft.internal_mint(token_id, token_owner_id, Some(token_metadata))
+impl TemplarProtocol {
+    fn handle_deposit(&mut self, vault_id: &str, sender_id: AccountId, amount: U128) -> PromiseOrValue<U128> {
+        let mut vault = self.vaults.get(vault_id).expect("Vault not found");
+        vault.stablecoin_balance += amount.0;
+        self.vaults.insert(vault_id, &vault);
+        PromiseOrValue::Value(U128(0))
+    }
+
+    fn handle_collateral(&mut self, vault_id: &str, sender_id: AccountId, amount: U128) -> PromiseOrValue<U128> {
+        let mut vault = self.vaults.get(vault_id).expect("Vault not found");
+        vault.collateral_balance += amount.0;
+        self.vaults.insert(vault_id, &vault);
+        PromiseOrValue::Value(U128(0))
     }
 }
 
-#[ext_contract(ext_fungible_token)]
-trait FungibleToken {
-    fn ft_transfer(&mut self, receiver_id: AccountId, amount: U128, memo: Option<String>);
-    fn ft_transfer_call(&mut self, receiver_id: AccountId, amount: U128, memo: Option<String>, msg: String) -> PromiseOrValue<U128>;
+// Implement required traits
+impl NonFungibleTokenCore for TemplarProtocol {
+    fn nft_transfer(
+        &mut self,
+        receiver_id: AccountId,
+        token_id: TokenId,
+        approval_id: Option<u64>,
+        memo: Option<String>,
+    ) {
+        self.nft.nft_transfer(receiver_id, token_id, approval_id, memo)
+    }
+
+    fn nft_transfer_call(
+        &mut self,
+        receiver_id: AccountId,
+        token_id: TokenId,
+        approval_id: Option<u64>,
+        memo: Option<String>,
+        msg: String,
+    ) -> PromiseOrValue<bool> {
+        self.nft.nft_transfer_call(receiver_id, token_id, approval_id, memo, msg)
+    }
+
+    fn nft_token(&self, token_id: TokenId) -> Option<Token> {
+        self.nft.nft_token(token_id)
+    }
 }
 
-#[ext_contract(ext_self)]
-trait ExtSelf {
-    fn callback_deposit_stablecoin(&mut self, vault_id: String, amount: U128, sender_id: AccountId);
+impl NonFungibleTokenEnumeration for TemplarProtocol {
+    fn nft_total_supply(&self) -> U128 {
+        self.nft.nft_total_supply()
+    }
+
+    fn nft_tokens(&self, from_index: Option<U128>, limit: Option<u64>) -> Vec<Token> {
+        self.nft.nft_tokens(from_index, limit)
+    }
+
+    fn nft_supply_for_owner(&self, account_id: AccountId) -> U128 {
+        self.nft.nft_supply_for_owner(account_id)
+    }
+
+    fn nft_tokens_for_owner(&self, account_id: AccountId, from_index: Option<U128>, limit: Option<u64>) -> Vec<Token> {
+        self.nft.nft_tokens_for_owner(account_id, from_index, limit)
+    }
+}
+
+#[near_bindgen]
+impl NonFungibleTokenResolver for TemplarProtocol {
+    #[private]
+    fn nft_resolve_transfer(
+        &mut self,
+        previous_owner_id: AccountId,
+        receiver_id: AccountId,
+        token_id: TokenId,
+        approved_account_ids: Option<std::collections::HashMap<AccountId, u64>>,
+    ) -> bool {
+        self.nft.nft_resolve_transfer(previous_owner_id, receiver_id, token_id, approved_account_ids)
+    }
+}
+
+#[near_bindgen]
+impl NonFungibleTokenApproval for TemplarProtocol {
+    fn nft_approve(
+        &mut self,
+        token_id: TokenId,
+        account_id: AccountId,
+        msg: Option<String>,
+    ) -> Option<Promise> {
+        self.nft.nft_approve(token_id, account_id, msg)
+    }
+
+    fn nft_is_approved(
+        &self,
+        token_id: TokenId,
+        approved_account_id: AccountId,
+        approval_id: Option<u64>,
+    ) -> bool {
+        self.nft.nft_is_approved(token_id, approved_account_id, approval_id)
+    }
+
+    fn nft_revoke(&mut self, token_id: TokenId, account_id: AccountId) {
+        self.nft.nft_revoke(token_id, account_id)
+    }
+
+    fn nft_revoke_all(&mut self, token_id: TokenId) {
+        self.nft.nft_revoke_all(token_id)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use near_sdk::test_utils::{accounts, VMContextBuilder};
-    use near_sdk::{testing_env, MockedBlockchain};
+    use near_sdk::testing_env;
 
     fn get_context(predecessor_account_id: AccountId) -> VMContextBuilder {
         let mut builder = VMContextBuilder::new();
@@ -269,11 +344,8 @@ mod tests {
     #[test]
     fn test_create_vault() {
         let mut context = get_context(accounts(1));
-        testing_env!(context.build());
+        testing_env!(context.attached_deposit(NearToken::from_yoctonear(NFT_MINT_FEE)).build());
         let mut contract = TemplarProtocol::new();
-
-        context.attached_deposit(NFT_MINT_FEE);
-        testing_env!(context.build());
 
         contract.create_vault(accounts(2), accounts(3), accounts(4), 150);
         assert!(contract.vaults.contains_key(&format!("{}:{}", accounts(3), accounts(4))));
@@ -295,7 +367,7 @@ mod tests {
         testing_env!(context.build());
         let mut contract = TemplarProtocol::new();
 
-        context.attached_deposit(NFT_MINT_FEE);
+        context.attached_deposit(NearToken::from_yoctonear(NFT_MINT_FEE));
         testing_env!(context.build());
 
         contract.create_vault(accounts(2), accounts(3), accounts(4), 150);
