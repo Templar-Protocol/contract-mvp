@@ -575,4 +575,3 @@ mod tests {
         assert!(contract.owns_nft(&accounts(1), &accounts(2).to_string()));
     }
 }
-
