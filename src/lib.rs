@@ -13,10 +13,10 @@ use near_sdk::{
     collections::{LazyOption, LookupMap, UnorderedMap},
     env,
     json_types::U128,
-    near, serde_json, AccountId, BorshStorageKey, Gas, NearToken, Promise, PromiseOrValue,
+    near, require, serde_json, AccountId, BorshStorageKey, Gas, NearToken, Promise, PromiseOrValue,
 };
 
-const NFT_MINT_FEE: u128 = 1_000_000_000_000_000_000_000_000; // 1 NEAR
+const NFT_MINT_FEE: NearToken = NearToken::from_near(1);
 
 #[derive(BorshStorageKey, Debug, Clone, Copy, Hash)]
 #[near(serializers = [borsh])]
@@ -93,14 +93,14 @@ impl TemplarProtocol {
         stablecoin: AccountId,
         min_collateral_ratio: u64,
     ) {
-        assert!(
-            env::attached_deposit() >= NearToken::from_yoctonear(NFT_MINT_FEE),
-            "Not enough deposit to create vault"
+        require!(
+            env::attached_deposit() >= NFT_MINT_FEE,
+            "Not enough deposit to create vault",
         );
         let vault_id = format!("{}:{}", collateral_asset, stablecoin);
-        assert!(
+        require!(
             !self.vaults.get(&vault_id).is_some(),
-            "Vault already exists"
+            "Vault already exists",
         );
 
         let vault = Vault {
@@ -144,9 +144,9 @@ impl TemplarProtocol {
     pub fn deposit_stablecoin(&mut self, vault_id: String, amount: U128) -> Promise {
         let mut vault = self.vaults.get(&vault_id).expect("Vault not found");
         let nft_collection = self.get_nft_collection_for_vault(&vault_id);
-        assert!(
+        require!(
             self.owns_nft(&env::predecessor_account_id(), &nft_collection.to_string()),
-            "Not authorized"
+            "Not authorized",
         );
 
         vault.stablecoin_balance += amount.0;
@@ -173,14 +173,14 @@ impl TemplarProtocol {
     ) -> Promise {
         let mut vault = self.vaults.get(&vault_id).expect("Vault not found");
         let nft_collection = self.get_nft_collection_for_vault(&vault_id);
-        assert!(
+        require!(
             self.owns_nft(&env::predecessor_account_id(), &nft_collection.to_string()),
-            "Not authorized"
+            "Not authorized",
         );
 
-        assert!(
+        require!(
             vault.stablecoin_balance >= borrow_amount.0,
-            "Insufficient liquidity"
+            "Insufficient liquidity",
         );
 
         vault.collateral_balance += collateral_amount.0;
@@ -216,11 +216,11 @@ impl TemplarProtocol {
     }
 
     pub fn create_invite(&mut self, nft_collection: AccountId) -> String {
-        assert!(
+        require!(
             self.nft_collections
                 .get(&nft_collection.to_string())
                 .is_some(),
-            "NFT collection not found"
+            "NFT collection not found",
         );
         let invite_code = hex::encode(env::sha256(&env::random_seed()));
         self.invites
@@ -230,14 +230,14 @@ impl TemplarProtocol {
 
     #[payable]
     pub fn mint_nft(&mut self, invite_code: String, token_metadata: TokenMetadata) -> Token {
-        assert!(
-            env::attached_deposit() >= NearToken::from_yoctonear(NFT_MINT_FEE),
-            "Not enough deposit to mint NFT"
+        require!(
+            env::attached_deposit() >= NFT_MINT_FEE,
+            "Not enough deposit to mint NFT",
         );
         let nft_collection = self.invites.get(&invite_code).expect("Invalid invite code");
-        assert!(
+        require!(
             !self.owns_nft(&env::predecessor_account_id(), &nft_collection),
-            "Already a member"
+            "Already a member",
         );
 
         let token_id = (self.nft.nft_total_supply().0 + 1).to_string();
@@ -281,7 +281,7 @@ impl FungibleTokenReceiver for TemplarProtocol {
         msg: String,
     ) -> PromiseOrValue<U128> {
         let parts: Vec<&str> = msg.split(':').collect();
-        assert!(parts.len() == 2, "Invalid message format");
+        require!(parts.len() == 2, "Invalid message format");
         let action = parts[0];
         let vault_id = parts[1];
 
@@ -453,9 +453,7 @@ mod tests {
     #[test]
     fn test_create_vault() {
         let mut context = get_context(accounts(1));
-        testing_env!(context
-            .attached_deposit(NearToken::from_yoctonear(NFT_MINT_FEE))
-            .build());
+        testing_env!(context.attached_deposit(NFT_MINT_FEE).build());
         let mut contract = TemplarProtocol::new();
 
         contract.create_vault(accounts(2), accounts(3), accounts(4), 150);
@@ -478,12 +476,10 @@ mod tests {
     #[test]
     fn test_create_invite() {
         let mut context = get_context(accounts(1));
-        testing_env!(context
-            .attached_deposit(NearToken::from_yoctonear(NFT_MINT_FEE))
-            .build());
+        testing_env!(context.attached_deposit(NFT_MINT_FEE).build());
         let mut contract = TemplarProtocol::new();
 
-        context.attached_deposit(NearToken::from_yoctonear(NFT_MINT_FEE));
+        context.attached_deposit(NFT_MINT_FEE);
         testing_env!(context.build());
 
         contract.create_vault(accounts(2), accounts(3), accounts(4), 150);
@@ -504,9 +500,7 @@ mod tests {
     #[test]
     fn test_deposit_stablecoin() {
         let mut context = get_context(accounts(1));
-        testing_env!(context
-            .attached_deposit(NearToken::from_yoctonear(NFT_MINT_FEE))
-            .build());
+        testing_env!(context.attached_deposit(NFT_MINT_FEE).build());
         let mut contract = TemplarProtocol::new();
 
         // Create a vault first
@@ -525,9 +519,7 @@ mod tests {
     #[test]
     fn test_borrow() {
         let mut context = get_context(accounts(1));
-        testing_env!(context
-            .attached_deposit(NearToken::from_yoctonear(NFT_MINT_FEE))
-            .build());
+        testing_env!(context.attached_deposit(NFT_MINT_FEE).build());
         let mut contract = TemplarProtocol::new();
 
         // Create a vault first
@@ -556,9 +548,7 @@ mod tests {
     #[test]
     fn test_mint_nft() {
         let mut context = get_context(accounts(1));
-        testing_env!(context
-            .attached_deposit(NearToken::from_yoctonear(NFT_MINT_FEE))
-            .build());
+        testing_env!(context.attached_deposit(NFT_MINT_FEE).build());
         let mut contract = TemplarProtocol::new();
 
         // Create an invite
