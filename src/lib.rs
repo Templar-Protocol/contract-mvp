@@ -1,5 +1,5 @@
 use near_contract_standards::{
-    fungible_token::{receiver::FungibleTokenReceiver, Balance},
+    fungible_token::{core::ext_ft_core, receiver::FungibleTokenReceiver, Balance},
     non_fungible_token::{
         approval::NonFungibleTokenApproval,
         core::{NonFungibleTokenCore, NonFungibleTokenResolver},
@@ -13,7 +13,7 @@ use near_sdk::{
     collections::{LazyOption, LookupMap, UnorderedMap},
     env,
     json_types::U128,
-    near, require, serde_json, AccountId, BorshStorageKey, Gas, NearToken, Promise, PromiseOrValue,
+    near, require, AccountId, BorshStorageKey, Gas, NearToken, Promise, PromiseOrValue,
 };
 
 const NFT_MINT_FEE: NearToken = NearToken::from_near(1);
@@ -152,17 +152,15 @@ impl TemplarProtocol {
         vault.stablecoin_balance += amount.0;
         self.vaults.insert(&vault_id, &vault);
 
-        Promise::new(vault.stablecoin.clone()).function_call(
-            "ft_transfer_call".to_string(),
-            serde_json::to_vec(&serde_json::json!({
-                "receiver_id": env::current_account_id(),
-                "amount": amount,
-                "msg": format!("deposit:{}", vault_id)
-            }))
-            .unwrap(),
-            NearToken::from_yoctonear(1),
-            Gas::from_tgas(10),
-        )
+        ext_ft_core::ext(vault.stablecoin.clone())
+            .with_attached_deposit(NearToken::from_yoctonear(1))
+            .with_static_gas(Gas::from_tgas(10))
+            .ft_transfer_call(
+                env::current_account_id(),
+                amount,
+                None,
+                format!("deposit:{vault_id}"),
+            )
     }
 
     pub fn borrow(
@@ -189,29 +187,20 @@ impl TemplarProtocol {
 
         self.vaults.insert(&vault_id, &vault);
 
-        Promise::new(vault.collateral_asset.clone())
-            .function_call(
-                "ft_transfer_call".to_string(),
-                serde_json::to_vec(&serde_json::json!({
-                    "receiver_id": env::current_account_id(),
-                    "amount": collateral_amount,
-                    "msg": format!("collateral:{}", vault_id)
-                }))
-                .unwrap(),
-                NearToken::from_yoctonear(1),
-                Gas::from_tgas(10),
+        ext_ft_core::ext(vault.collateral_asset.clone())
+            .with_attached_deposit(NearToken::from_yoctonear(1))
+            .with_static_gas(Gas::from_tgas(10))
+            .ft_transfer_call(
+                env::current_account_id(),
+                collateral_amount,
+                None,
+                format!("collateral:{vault_id}"),
             )
             .then(
-                Promise::new(vault.stablecoin.clone()).function_call(
-                    "ft_transfer".to_string(),
-                    serde_json::to_vec(&serde_json::json!({
-                        "receiver_id": env::predecessor_account_id(),
-                        "amount": borrow_amount,
-                    }))
-                    .unwrap(),
-                    NearToken::from_yoctonear(1),
-                    Gas::from_tgas(10),
-                ),
+                ext_ft_core::ext(vault.stablecoin.clone())
+                    .with_attached_deposit(NearToken::from_yoctonear(1))
+                    .with_static_gas(Gas::from_tgas(10))
+                    .ft_transfer(env::predecessor_account_id(), borrow_amount, None),
             )
     }
 
