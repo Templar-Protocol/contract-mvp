@@ -61,7 +61,6 @@ pub struct Loan {
 impl TemplarProtocol {
     #[init]
     pub fn new() -> Self {
-        assert!(!env::state_exists(), "Already initialized");
         let metadata = NFTContractMetadata {
             spec: NFT_METADATA_SPEC.to_string(),
             name: "Templar Protocol NFT".to_string(),
