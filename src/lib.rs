@@ -143,26 +143,16 @@ impl TemplarProtocol {
     }
 
     #[payable]
-    pub fn deposit_stablecoin(&mut self, vault_id: String, amount: U128) -> Promise {
-        let mut vault = self.vaults.get(&vault_id).expect("Vault not found");
+    pub fn deposit_stablecoin(&mut self, vault_id: String, amount: U128) {
         let nft_collection = self.get_nft_collection_for_vault(&vault_id);
         require!(
             self.owns_nft(&env::predecessor_account_id(), &nft_collection.to_string()),
             "Not authorized",
         );
 
-        vault.stablecoin_balance += amount.0;
-        self.vaults.insert(&vault_id, &vault);
-
-        ext_ft_core::ext(vault.stablecoin.clone())
-            .with_attached_deposit(NearToken::from_yoctonear(1))
-            .with_static_gas(Gas::from_tgas(10))
-            .ft_transfer_call(
-                env::current_account_id(),
-                amount,
-                None,
-                format!("deposit:{vault_id}"),
-            )
+        // Instead of calling ft_transfer_call, we just log the intent
+        // The actual transfer should be initiated by the user
+        env::log_str(&format!("Deposit intent: {} tokens to vault {}", amount.0, vault_id));
     }
 
     pub fn borrow(
@@ -295,13 +285,19 @@ impl TemplarProtocol {
     fn handle_deposit(
         &mut self,
         vault_id: &str,
-        _sender_id: AccountId,
+        sender_id: AccountId,
         amount: U128,
     ) -> PromiseOrValue<U128> {
         let mut vault = self
             .vaults
             .get(&vault_id.to_string())
             .expect("Vault not found");
+        let nft_collection = self.get_nft_collection_for_vault(vault_id);
+        require!(
+            self.owns_nft(&sender_id, &nft_collection.to_string()),
+            "Not authorized",
+        );
+
         vault.stablecoin_balance += amount.0;
         self.vaults.insert(&vault_id.to_string(), &vault);
         PromiseOrValue::Value(U128(0))
@@ -498,7 +494,9 @@ mod tests {
 
         // Test deposit_stablecoin
         let deposit_amount = U128(1000);
-        let _result = contract.deposit_stablecoin(vault_id.clone(), deposit_amount);
+        contract.deposit_stablecoin(vault_id.clone(), deposit_amount);
+        // Simulate the actual transfer
+        contract.ft_on_transfer(accounts(1), deposit_amount, format!("deposit:{vault_id}"));
 
         // Check if the vault balance is updated
         let updated_vault = contract.vaults.get(&vault_id).unwrap();
