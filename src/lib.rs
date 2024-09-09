@@ -92,7 +92,7 @@ impl TemplarProtocol {
         collateral_asset: AccountId,
         stablecoin: AccountId,
         min_collateral_ratio: u64,
-    ) {
+    ) -> (String, TokenId) {
         require!(
             env::attached_deposit() >= NFT_MINT_FEE,
             "Not enough deposit to create vault",
@@ -134,10 +134,12 @@ impl TemplarProtocol {
             reference_hash: None,
         };
         self.nft.internal_mint(
-            token_id,
+            token_id.clone(),
             env::predecessor_account_id(),
             Some(token_metadata),
         );
+
+        (vault_id, token_id)
     }
 
     #[payable]
@@ -445,11 +447,10 @@ mod tests {
         testing_env!(context.attached_deposit(NFT_MINT_FEE).build());
         let mut contract = TemplarProtocol::new();
 
-        contract.create_vault(accounts(2), accounts(3), accounts(4), 150);
-        assert!(contract
-            .vaults
-            .get(&format!("{}:{}", accounts(3), accounts(4)))
-            .is_some());
+        let (vault_id, token_id) = contract.create_vault(accounts(2), accounts(3), accounts(4), 150);
+        assert!(contract.vaults.get(&vault_id).is_some());
+        assert_eq!(vault_id, format!("{}:{}", accounts(3), accounts(4)));
+        assert_eq!(token_id, "1");
     }
 
     #[test]
@@ -493,8 +494,7 @@ mod tests {
         let mut contract = TemplarProtocol::new();
 
         // Create a vault first
-        contract.create_vault(accounts(2), accounts(3), accounts(4), 150);
-        let vault_id = format!("{}:{}", accounts(3), accounts(4));
+        let (vault_id, _) = contract.create_vault(accounts(2), accounts(3), accounts(4), 150);
 
         // Test deposit_stablecoin
         let deposit_amount = U128(1000);
@@ -512,8 +512,7 @@ mod tests {
         let mut contract = TemplarProtocol::new();
 
         // Create a vault first
-        contract.create_vault(accounts(2), accounts(3), accounts(4), 150);
-        let vault_id = format!("{}:{}", accounts(3), accounts(4));
+        let (vault_id, _) = contract.create_vault(accounts(2), accounts(3), accounts(4), 150);
 
         // Add some liquidity to the vault
         let mut vault = contract.vaults.get(&vault_id).unwrap();
