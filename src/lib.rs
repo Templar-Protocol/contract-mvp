@@ -152,7 +152,10 @@ impl TemplarProtocol {
 
         // Instead of calling ft_transfer_call, we just log the intent
         // The actual transfer should be initiated by the user
-        env::log_str(&format!("Deposit intent: {} tokens to vault {}", amount.0, vault_id));
+        env::log_str(&format!(
+            "Deposit intent: {} tokens to vault {}",
+            amount.0, vault_id
+        ));
     }
 
     pub fn borrow(
@@ -266,9 +269,11 @@ impl FungibleTokenReceiver for TemplarProtocol {
         let action = parts[0];
         let vault_id = parts[1];
 
+        let contract_id = env::predecessor_account_id();
+
         match action {
-            "deposit" => self.handle_deposit(vault_id, sender_id, amount),
-            "collateral" => self.handle_collateral(vault_id, sender_id, amount),
+            "deposit" => self.handle_deposit(vault_id, sender_id, contract_id, amount),
+            "collateral" => self.handle_collateral(vault_id, sender_id, contract_id, amount),
             _ => env::panic_str("Invalid action"),
         }
     }
@@ -286,12 +291,17 @@ impl TemplarProtocol {
         &mut self,
         vault_id: &str,
         sender_id: AccountId,
+        contract_id: AccountId,
         amount: U128,
     ) -> PromiseOrValue<U128> {
         let mut vault = self
             .vaults
             .get(&vault_id.to_string())
             .expect("Vault not found");
+        require!(
+            vault.stablecoin == contract_id,
+            "Vault does not support this asset",
+        );
         let nft_collection = self.get_nft_collection_for_vault(vault_id);
         require!(
             self.owns_nft(&sender_id, &nft_collection.to_string()),
@@ -307,12 +317,17 @@ impl TemplarProtocol {
         &mut self,
         vault_id: &str,
         _sender_id: AccountId,
+        contract_id: AccountId,
         amount: U128,
     ) -> PromiseOrValue<U128> {
         let mut vault = self
             .vaults
             .get(&vault_id.to_string())
             .expect("Vault not found");
+        require!(
+            vault.collateral_asset == contract_id,
+            "Vault does not support this asset as collateral",
+        );
         vault.collateral_balance += amount.0;
         self.vaults.insert(&vault_id.to_string(), &vault);
         PromiseOrValue::Value(U128(0))
@@ -443,7 +458,8 @@ mod tests {
         testing_env!(context.attached_deposit(NFT_MINT_FEE).build());
         let mut contract = TemplarProtocol::new();
 
-        let (vault_id, token_id) = contract.create_vault(accounts(2), accounts(3), accounts(4), 150);
+        let (vault_id, token_id) =
+            contract.create_vault(accounts(2), accounts(3), accounts(4), 150);
         assert!(contract.vaults.get(&vault_id).is_some());
         assert_eq!(vault_id, format!("{}:{}", accounts(3), accounts(4)));
         assert_eq!(token_id, "1");
