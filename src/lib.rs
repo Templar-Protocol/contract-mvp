@@ -1,4 +1,4 @@
-use std::{fmt::Display, str::FromStr};
+use std::str::FromStr;
 
 use near_contract_standards::{
     fungible_token::{core::ext_ft_core, receiver::FungibleTokenReceiver},
@@ -17,6 +17,9 @@ use near_sdk::{
     json_types::U128,
     near, require, AccountId, BorshStorageKey, Gas, NearToken, Promise, PromiseOrValue,
 };
+
+mod vault;
+use vault::Vault;
 
 const NFT_MINT_FEE: NearToken = NearToken::from_near(1);
 
@@ -41,9 +44,6 @@ pub struct TemplarProtocol {
     nft: NonFungibleToken, // allows for easy integration w/ NFT functionality provided by near-contract-standards
     metadata: LazyOption<NFTContractMetadata>,
 }
-
-mod vault;
-use vault::Vault;
 
 #[near]
 pub struct Loan {
