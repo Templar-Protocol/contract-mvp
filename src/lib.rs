@@ -1,5 +1,7 @@
+use std::{fmt::Display, str::FromStr};
+
 use near_contract_standards::{
-    fungible_token::{core::ext_ft_core, receiver::FungibleTokenReceiver, Balance},
+    fungible_token::{core::ext_ft_core, receiver::FungibleTokenReceiver},
     non_fungible_token::{
         approval::NonFungibleTokenApproval,
         core::{NonFungibleTokenCore, NonFungibleTokenResolver},
@@ -40,16 +42,8 @@ pub struct TemplarProtocol {
     metadata: LazyOption<NFTContractMetadata>,
 }
 
-#[near]
-pub struct Vault {
-    collateral_asset: AccountId,
-    stablecoin: AccountId,
-    collateral_balance: u128,
-    stablecoin_balance: u128,
-    loans: Vec<AccountId>, // TODO: use UnorderedSet - using Vec for now for compatibility with NEAR SDK 5.3 serializer
-    min_collateral_ratio: u64,
-    debt: Balance,
-}
+mod vault;
+use vault::Vault;
 
 #[near]
 pub struct Loan {
@@ -97,21 +91,12 @@ impl TemplarProtocol {
             env::attached_deposit() >= NFT_MINT_FEE,
             "Not enough deposit to create vault",
         );
-        let vault_id = format!("{}:{}", collateral_asset, stablecoin);
+
+        let (vault_id, vault) = Vault::new(collateral_asset, stablecoin, min_collateral_ratio);
         require!(
             !self.vaults.get(&vault_id).is_some(),
             "Vault already exists",
         );
-
-        let vault = Vault {
-            collateral_asset,
-            stablecoin,
-            collateral_balance: 0,
-            stablecoin_balance: 0,
-            loans: Vec::new(),
-            min_collateral_ratio,
-            debt: 0,
-        };
 
         self.vaults.insert(&vault_id, &vault);
         self.nft_collections
@@ -264,17 +249,21 @@ impl FungibleTokenReceiver for TemplarProtocol {
         amount: U128,
         msg: String,
     ) -> PromiseOrValue<U128> {
-        let parts: Vec<&str> = msg.split(':').collect();
-        require!(parts.len() == 2, "Invalid message format");
-        let action = parts[0];
-        let vault_id = parts[1];
+        use vault::Message;
+
+        let Ok(message) = Message::from_str(&msg) else {
+            env::panic_str("Invalid message format");
+        };
 
         let contract_id = env::predecessor_account_id();
 
-        match action {
-            "deposit" => self.handle_deposit(vault_id, sender_id, contract_id, amount),
-            "collateral" => self.handle_collateral(vault_id, sender_id, contract_id, amount),
-            _ => env::panic_str("Invalid action"),
+        match message {
+            Message::Deposit { vault_id } => {
+                self.handle_deposit(&vault_id, sender_id, contract_id, amount)
+            }
+            Message::Collateral { vault_id } => {
+                self.handle_collateral(&vault_id, sender_id, contract_id, amount)
+            }
         }
     }
 }
