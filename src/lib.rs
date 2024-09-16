@@ -15,11 +15,12 @@ use near_sdk::{
     collections::{LazyOption, LookupMap, UnorderedMap},
     env,
     json_types::U128,
-    near, require, AccountId, BorshStorageKey, Gas, NearToken, Promise, PromiseError, PromiseOrValue,
+    near, require, AccountId, BorshStorageKey, Gas, NearToken, Promise, PromiseError,
+    PromiseOrValue,
 };
 
 mod vault;
-use vault::{Vault, Loan, Deposit};
+use vault::{Deposit, Loan, Vault};
 
 const NFT_MINT_FEE: NearToken = NearToken::from_near(1);
 
@@ -44,7 +45,6 @@ pub struct TemplarProtocol {
     nft: NonFungibleToken, // allows for easy integration w/ NFT functionality provided by near-contract-standards
     metadata: LazyOption<NFTContractMetadata>,
 }
-
 
 #[near]
 impl TemplarProtocol {
@@ -131,7 +131,7 @@ impl TemplarProtocol {
         );
 
         let vault = self.vaults.get(&vault_id).expect("Vault not found");
-        
+
         // 1. Make ft_transfer_call to deposit stablecoins into the vault
         // 2. Create a new deposit
         // 3. Return a promise that resolves to a boolean indicating success or failure
@@ -144,9 +144,15 @@ impl TemplarProtocol {
                 None,
                 format!("deposit:{vault_id}"),
             )
-            .then(Self::ext(env::current_account_id())
-                .with_static_gas(Gas::from_tgas(5))
-                .on_deposit_stablecoin_callback(vault_id, env::predecessor_account_id(), amount))
+            .then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(Gas::from_tgas(5))
+                    .on_deposit_stablecoin_callback(
+                        vault_id,
+                        env::predecessor_account_id(),
+                        amount,
+                    ),
+            )
     }
 
     #[private]
@@ -155,11 +161,14 @@ impl TemplarProtocol {
         vault_id: String,
         lender: AccountId,
         amount: U128,
-        #[callback_result] transfer_result: Result<U128, PromiseError>
+        #[callback_result] transfer_result: Result<U128, PromiseError>,
     ) -> bool {
         if let Ok(unused_amount) = transfer_result {
             if unused_amount.0 > 0 {
-                env::log_str(&format!("Warning: {} tokens were not used in the transfer", unused_amount.0));
+                env::log_str(&format!(
+                    "Warning: {} tokens were not used in the transfer",
+                    unused_amount.0
+                ));
             }
 
             let deposited_amount = amount.0 - unused_amount.0;
@@ -179,14 +188,19 @@ impl TemplarProtocol {
             // Update the vault
             self.vaults.insert(&vault_id, &vault);
 
-            env::log_str(&format!("Successfully lent {} stablecoins to vault {}", deposited_amount, vault_id));
+            env::log_str(&format!(
+                "Successfully lent {} stablecoins to vault {}",
+                deposited_amount, vault_id
+            ));
             true
         } else {
-            env::log_str(&format!("Failed to lend {} stablecoins to vault {}", amount.0, vault_id));
+            env::log_str(&format!(
+                "Failed to lend {} stablecoins to vault {}",
+                amount.0, vault_id
+            ));
             false
         }
     }
-
 
     pub fn borrow(
         &mut self,
