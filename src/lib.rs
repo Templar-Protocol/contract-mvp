@@ -220,6 +220,7 @@ impl TemplarProtocol {
             "Insufficient liquidity",
         );
 
+        // TODO: move this into on_borrow_callback function
         vault.collateral_balance += collateral_amount.0;
         vault.stablecoin_balance -= borrow_amount.0;
         vault.loans.push(Loan {
@@ -231,6 +232,10 @@ impl TemplarProtocol {
 
         self.vaults.insert(&vault_id, &vault);
 
+        // TODO:
+        // 1. Make ft_transfer_call to deposit collateral into the vault
+        // 2. Create a new loan
+        // 3. Return a promise that resolves to a boolean indicating success or failure
         ext_ft_core::ext(vault.collateral_asset.clone())
             .with_attached_deposit(NearToken::from_yoctonear(1))
             .with_static_gas(Gas::from_tgas(10))
