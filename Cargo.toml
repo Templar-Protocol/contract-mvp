@@ -28,8 +28,9 @@ container_build_command = ["cargo", "near", "build"]
 [dependencies]
 borsh = "0.9.3"
 hex = "0.4.3"
-near-sdk = { version = "5.4.0", features = ["unstable"] }
 near-contract-standards = "5.3.0"
+near-crypto = "0.26.0"
+near-sdk = { version = "5.4.0", features = ["unstable"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.90"
 
