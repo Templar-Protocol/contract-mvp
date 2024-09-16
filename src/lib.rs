@@ -15,11 +15,11 @@ use near_sdk::{
     collections::{LazyOption, LookupMap, UnorderedMap},
     env,
     json_types::U128,
-    near, require, AccountId, BorshStorageKey, Gas, NearToken, Promise, PromiseOrValue,
+    near, require, AccountId, BorshStorageKey, Gas, NearToken, Promise, PromiseError, PromiseOrValue,
 };
 
 mod vault;
-use vault::Vault;
+use vault::{Vault, Loan, Deposit};
 
 const NFT_MINT_FEE: NearToken = NearToken::from_near(1);
 
@@ -45,11 +45,6 @@ pub struct TemplarProtocol {
     metadata: LazyOption<NFTContractMetadata>,
 }
 
-#[near]
-pub struct Loan {
-    collateral_amount: u128,
-    borrowed_amount: u128,
-}
 
 #[near]
 impl TemplarProtocol {
@@ -128,20 +123,70 @@ impl TemplarProtocol {
     }
 
     #[payable]
-    pub fn deposit_stablecoin(&mut self, vault_id: String, amount: U128) {
+    pub fn lend(&mut self, vault_id: String, amount: U128) -> Promise {
         let nft_collection = self.get_nft_collection_for_vault(&vault_id);
         require!(
             self.owns_nft(&env::predecessor_account_id(), &nft_collection.to_string()),
             "Not authorized",
         );
 
-        // Instead of calling ft_transfer_call, we just log the intent
-        // The actual transfer should be initiated by the user
-        env::log_str(&format!(
-            "Deposit intent: {} tokens to vault {}",
-            amount.0, vault_id
-        ));
+        let vault = self.vaults.get(&vault_id).expect("Vault not found");
+        
+        // 1. Make ft_transfer_call to deposit stablecoins into the vault
+        // 2. Create a new deposit
+        // 3. Return a promise that resolves to a boolean indicating success or failure
+        ext_ft_core::ext(vault.stablecoin_asset.clone())
+            .with_attached_deposit(NearToken::from_yoctonear(1))
+            .with_static_gas(Gas::from_tgas(10))
+            .ft_transfer_call(
+                env::current_account_id(),
+                amount,
+                None,
+                format!("deposit:{vault_id}"),
+            )
+            .then(Self::ext(env::current_account_id())
+                .with_static_gas(Gas::from_tgas(5))
+                .on_lend_callback(vault_id, env::predecessor_account_id(), amount))
     }
+
+    #[private]
+    pub fn on_lend_callback(
+        &mut self,
+        vault_id: String,
+        lender: AccountId,
+        amount: U128,
+        #[callback_result] transfer_result: Result<U128, PromiseError>
+    ) -> bool {
+        if let Ok(unused_amount) = transfer_result {
+            if unused_amount.0 > 0 {
+                env::log_str(&format!("Warning: {} tokens were not used in the transfer", unused_amount.0));
+            }
+
+            let deposited_amount = amount.0 - unused_amount.0;
+
+            // Update vault balance
+            let mut vault = self.vaults.get(&vault_id).expect("Vault not found");
+            vault.stablecoin_balance += deposited_amount;
+
+            // Create a new deposit
+            let new_deposit = Deposit {
+                lender,
+                amount: deposited_amount,
+                timestamp: env::block_timestamp(),
+            };
+            vault.deposits.push(new_deposit);
+
+            // Update the vault
+            self.vaults.insert(&vault_id, &vault);
+
+            env::log_str(&format!("Successfully lent {} stablecoins to vault {}", deposited_amount, vault_id));
+            true
+        } else {
+            env::log_str(&format!("Failed to lend {} stablecoins to vault {}", amount.0, vault_id));
+            false
+        }
+    }
+
 
     pub fn borrow(
         &mut self,
@@ -163,7 +208,12 @@ impl TemplarProtocol {
 
         vault.collateral_balance += collateral_amount.0;
         vault.stablecoin_balance -= borrow_amount.0;
-        vault.loans.push(env::predecessor_account_id());
+        vault.loans.push(Loan {
+            collateral_amount: collateral_amount.0,
+            borrowed_amount: borrow_amount.0,
+            timestamp: env::block_timestamp(),
+            borrower: env::predecessor_account_id(),
+        });
 
         self.vaults.insert(&vault_id, &vault);
 
@@ -177,7 +227,7 @@ impl TemplarProtocol {
                 format!("collateral:{vault_id}"),
             )
             .then(
-                ext_ft_core::ext(vault.stablecoin.clone())
+                ext_ft_core::ext(vault.stablecoin_asset.clone())
                     .with_attached_deposit(NearToken::from_yoctonear(1))
                     .with_static_gas(Gas::from_tgas(10))
                     .ft_transfer(env::predecessor_account_id(), borrow_amount, None),
@@ -288,7 +338,7 @@ impl TemplarProtocol {
             .get(&vault_id.to_string())
             .expect("Vault not found");
         require!(
-            vault.stablecoin == contract_id,
+            vault.stablecoin_asset == contract_id,
             "Vault does not support this asset",
         );
         let nft_collection = self.get_nft_collection_for_vault(vault_id);
@@ -489,7 +539,7 @@ mod tests {
     }
 
     #[test]
-    fn test_deposit_stablecoin() {
+    fn test_lend() {
         let mut context = get_context(accounts(1));
         testing_env!(context.attached_deposit(NFT_MINT_FEE).build());
         let mut contract = TemplarProtocol::new();
@@ -497,14 +547,19 @@ mod tests {
         // Create a vault first
         let (vault_id, _) = contract.create_vault(accounts(2), accounts(3), accounts(4), 150);
 
-        // Test deposit_stablecoin
+        // Test lend
         let deposit_amount = U128(1000);
-        contract.deposit_stablecoin(vault_id.clone(), deposit_amount);
-        // Simulate the actual transfer
-        contract.ft_on_transfer(accounts(1), deposit_amount, format!("deposit:{vault_id}"));
+        let _result = contract.lend(vault_id.clone(), deposit_amount);
 
         // Check if the vault balance is updated
         let updated_vault = contract.vaults.get(&vault_id).unwrap();
+        println!("deposits len: {:?}", updated_vault.deposits.len());
+        assert_eq!(updated_vault.deposits.len(), 1);
+        println!("deposit amount: {:?}", updated_vault.deposits[0].amount);
+        assert_eq!(updated_vault.deposits[0].amount, 1000);
+        println!("deposit lender: {:?}", updated_vault.deposits[0].lender);
+        assert_eq!(updated_vault.deposits[0].lender, accounts(1));
+        println!("stablecoin balance: {:?}", updated_vault.stablecoin_balance);
         assert_eq!(updated_vault.stablecoin_balance, 1000);
     }
 
@@ -533,7 +588,7 @@ mod tests {
         assert_eq!(final_vault.collateral_balance, 1000);
         assert_eq!(final_vault.stablecoin_balance, 9500);
         assert_eq!(final_vault.loans.len(), 1);
-        assert_eq!(final_vault.loans[0], accounts(1));
+        assert_eq!(final_vault.loans[0].borrower, accounts(1));
     }
 
     #[test]
