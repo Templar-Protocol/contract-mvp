@@ -239,7 +239,7 @@ impl TemplarProtocol {
                         env::predecessor_account_id(),
                         collateral_amount,
                         borrow_amount,
-                    )
+                    ),
             )
     }
 
@@ -289,17 +289,82 @@ impl TemplarProtocol {
         }
     }
 
-    pub fn create_invite(&mut self, nft_collection: AccountId) -> String {
+    pub fn create_invite(&mut self, nft_collection: AccountId, public_key: String) -> String {
         require!(
             self.nft_collections
                 .get(&nft_collection.to_string())
                 .is_some(),
             "NFT collection not found",
         );
-        let invite_code = hex::encode(env::sha256(&env::random_seed()));
+        let invite_code = public_key;
         self.invites
             .insert(&invite_code, &nft_collection.to_string());
         invite_code
+    }
+
+    pub fn use_invite(&mut self, signature: String, invitee_account_id: AccountId) -> bool {
+        let invite_code = self.invites.get(&signature).expect("Invalid invite code");
+        let message = format!(
+            "{}{}{}{}",
+            invitee_account_id,
+            env::current_account_id(),
+            env::current_account_id(),
+            invite_code
+        );
+        
+        // Verify the signature using ed25519_dalek
+        let public_key = PublicKey::from_bytes(&hex::decode(&invite_code).expect("Invalid public key"))
+            .expect("Invalid public key");
+        let signature = Signature::from_bytes(&hex::decode(&signature).expect("Invalid signature"))
+            .expect("Invalid signature");
+        let message = message.as_bytes();
+        let is_valid_msg = public_key.verify(message, &signature).is_ok();
+        let is_valid_sig = self.verify_signature(signature, message);
+
+        if is_valid_msg && is_valid_sig {
+            self.invites.remove(&signature);
+            // Issue the NFT to the invitee
+            let nft_collection_account = AccountId::new_unchecked(invite_code);
+            let token_id = (self.nft.nft_total_supply().0 + 1).to_string();
+            let token_metadata = TokenMetadata {
+                title: Some(format!("Membership NFT #{}", token_id)),
+                description: Some("Membership NFT for vault access".to_string()),
+                media: None,
+                media_hash: None,
+                copies: Some(1),
+                issued_at: Some(env::block_timestamp().to_string()),
+                expires_at: None,
+                starts_at: None,
+                updated_at: None,
+                extra: None,
+                reference: None,
+                reference_hash: None,
+            };
+
+            self.nft.internal_mint(
+                token_id,
+                invitee_account_id.clone(),
+                Some(token_metadata),
+            );
+
+            env::log_str(&format!(
+                "NFT minted for {} in collection {}",
+                invitee_account_id, nft_collection_account
+            ));
+            true
+        } else {
+            false
+        }
+    }
+
+    fn verify_signature(&self, _signature: String, _message: String) -> bool {
+        // Verify the signature using ed25519_dalek
+        let public_key = PublicKey::from_bytes(&hex::decode(&_signature).expect("Invalid public key"))
+            .expect("Invalid public key");
+        let signature = Signature::from_bytes(&hex::decode(&_signature).expect("Invalid signature"))
+            .expect("Invalid signature");
+        let message = _message.as_bytes();
+        public_key.verify(message, &signature).is_ok()
     }
 
     #[payable]
