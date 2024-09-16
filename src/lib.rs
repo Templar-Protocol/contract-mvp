@@ -11,14 +11,14 @@ use near_contract_standards::{
         NonFungibleToken, NonFungibleTokenEnumeration, Token, TokenId,
     },
 };
+use near_crypto::{PublicKey, Signature};
 use near_sdk::{
     collections::{LazyOption, LookupMap, UnorderedMap},
     env,
     json_types::U128,
-    near, require, AccountId, BorshStorageKey, Gas, NearToken, Promise, PromiseError,
-    PromiseOrValue, CurveType,
+    near, require, AccountId, BorshStorageKey, CurveType, Gas, NearToken, Promise, PromiseError,
+    PromiseOrValue,
 };
-use near_crypto::{PublicKey, Signature};
 
 mod vault;
 use vault::{Deposit, Loan, Vault};
@@ -314,13 +314,20 @@ impl TemplarProtocol {
         );
 
         // Verify the signature using ed25519_dalek
-        let public_key = PublicKey::from_parts(CurveType::ED25519, hex::decode(&invite_code).expect("Invalid public key"))
-            .expect("Failed to create public key from parts");
-        let signature = Signature::from_parts(KeyType::ED25519, &hex::decode(&signature).expect("Invalid signature"))
-            .expect("Failed to create signature from parts");
+        let public_key = PublicKey::from_parts(
+            CurveType::ED25519,
+            hex::decode(&invite_code).expect("Invalid public key"),
+        )
+        .expect("Failed to create public key from parts");
+        let signature = Signature::from_parts(
+            KeyType::ED25519,
+            &hex::decode(&signature).expect("Invalid signature"),
+        )
+        .expect("Failed to create signature from parts");
         let message = message.as_bytes();
         let is_valid_msg = public_key.verify(message, &signature).is_ok();
-        let is_valid_sig = self.verify_signature(hex::encode(signature.to_vec()), hex::encode(message));
+        let is_valid_sig =
+            self.verify_signature(hex::encode(signature.to_vec()), hex::encode(message));
 
         if is_valid_msg && is_valid_sig {
             self.invites.remove(&signature.to_string());
@@ -342,11 +349,8 @@ impl TemplarProtocol {
                 reference_hash: None,
             };
 
-            self.nft.internal_mint(
-                token_id,
-                invitee_account_id.clone(),
-                Some(token_metadata),
-            );
+            self.nft
+                .internal_mint(token_id, invitee_account_id.clone(), Some(token_metadata));
 
             env::log_str(&format!(
                 "NFT minted for {} in collection {}",
@@ -360,10 +364,16 @@ impl TemplarProtocol {
 
     fn verify_signature(&self, signature: String, message: String) -> bool {
         // Verify the signature using ed25519_dalek
-        let public_key = PublicKey::from_parts(CurveType::ED25519, hex::decode(&signature).expect("Invalid public key"))
-            .expect("Failed to create public key from parts");
-        let signature = Signature::from_parts(KeyType::ED25519, &hex::decode(&signature).expect("Invalid signature"))
-            .expect("Failed to create signature from parts");
+        let public_key = PublicKey::from_parts(
+            CurveType::ED25519,
+            hex::decode(&signature).expect("Invalid public key"),
+        )
+        .expect("Failed to create public key from parts");
+        let signature = Signature::from_parts(
+            KeyType::ED25519,
+            &hex::decode(&signature).expect("Invalid signature"),
+        )
+        .expect("Failed to create signature from parts");
         let message = hex::decode(&message).expect("Invalid message");
         public_key.verify(&message, &signature).is_ok()
     }
@@ -641,7 +651,9 @@ mod tests {
         testing_env!(context.attached_deposit(NFT_MINT_FEE).build());
         let mut contract = TemplarProtocol::new();
 
-        contract.nft_collections.insert(&accounts(2).to_string(), &accounts(2));
+        contract
+            .nft_collections
+            .insert(&accounts(2).to_string(), &accounts(2));
         let invite_code = contract.create_invite(accounts(2), "public_key".to_string());
         assert!(contract.invites.get(&invite_code).is_some());
     }
@@ -756,7 +768,9 @@ mod tests {
         testing_env!(context.attached_deposit(NFT_MINT_FEE).build());
         let mut contract = TemplarProtocol::new();
 
-        contract.nft_collections.insert(&accounts(2).to_string(), &accounts(2));
+        contract
+            .nft_collections
+            .insert(&accounts(2).to_string(), &accounts(2));
         let invite_code = contract.create_invite(accounts(2), "public_key".to_string());
 
         // Mock signature and invitee account
