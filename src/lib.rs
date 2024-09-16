@@ -220,22 +220,7 @@ impl TemplarProtocol {
             "Insufficient liquidity",
         );
 
-        // TODO: move this into on_borrow_callback function
-        vault.collateral_balance += collateral_amount.0;
-        vault.stablecoin_balance -= borrow_amount.0;
-        vault.loans.push(Loan {
-            collateral_amount: collateral_amount.0,
-            borrowed_amount: borrow_amount.0,
-            timestamp: env::block_timestamp(),
-            borrower: env::predecessor_account_id(),
-        });
-
-        self.vaults.insert(&vault_id, &vault);
-
-        // TODO:
         // 1. Make ft_transfer_call to deposit collateral into the vault
-        // 2. Create a new loan
-        // 3. Return a promise that resolves to a boolean indicating success or failure
         ext_ft_core::ext(vault.collateral_asset.clone())
             .with_attached_deposit(NearToken::from_yoctonear(1))
             .with_static_gas(Gas::from_tgas(10))
@@ -245,12 +230,75 @@ impl TemplarProtocol {
                 None,
                 format!("collateral:{vault_id}"),
             )
+            // 2. Create a new loan and 3. Return stablecoins to the borrower
             .then(
-                ext_ft_core::ext(vault.stablecoin_asset.clone())
-                    .with_attached_deposit(NearToken::from_yoctonear(1))
+                Self::ext(env::current_account_id())
                     .with_static_gas(Gas::from_tgas(10))
-                    .ft_transfer(env::predecessor_account_id(), borrow_amount, None),
+                    .on_borrow_callback(
+                        vault_id.clone(),
+                        env::predecessor_account_id(),
+                        collateral_amount,
+                        borrow_amount,
+                    )
             )
+            // 4. Return a promise that resolves to a boolean indicating success or failure
+            .then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(Gas::from_tgas(5))
+                    .on_borrow_complete()
+            )
+    }
+
+    #[private]
+    pub fn on_borrow_callback(
+        &mut self,
+        vault_id: String,
+        borrower: AccountId,
+        collateral_amount: U128,
+        borrowed_amount: U128,
+        #[callback_result] transfer_result: Result<U128, PromiseError>,
+    ) -> bool {
+        if let Ok(unused_amount) = transfer_result {
+            if unused_amount.0 > 0 {
+                env::log_str(&format!(
+                    "Warning: {} tokens were not used in the transfer",
+                    unused_amount.0
+                ));
+            }
+
+            let mut vault = self.vaults.get(&vault_id).expect("Vault not found");
+            vault.collateral_balance += collateral_amount.0;
+            vault.stablecoin_balance -= borrowed_amount.0;
+            vault.loans.push(Loan {
+                collateral_amount: collateral_amount.0,
+                borrowed_amount: borrowed_amount.0,
+                timestamp: env::block_timestamp(),
+                borrower,
+            });
+            self.vaults.insert(&vault_id, &vault);
+            env::log_str(&format!(
+                "Account {} successfully borrowed {} stablecoins from vault {}",
+                borrower, borrowed_amount.0, vault_id
+            ));
+
+            // Return stablecoins to the borrower
+            ext_ft_core::ext(vault.stablecoin_asset.clone())
+                .with_attached_deposit(NearToken::from_yoctonear(1))
+                .with_static_gas(Gas::from_tgas(10))
+                .ft_transfer(borrower, borrowed_amount, None)
+                .then(
+                    Self::ext(env::current_account_id())
+                        .with_static_gas(Gas::from_tgas(5))
+                        .on_borrow_complete()
+                )
+                .return_value(true);
+        } else {
+            env::log_str(&format!(
+                "Account {} failed to borrow {} stablecoins from vault {}",
+                borrower, collateral_amount.0, vault_id
+            ));
+            false
+        }
     }
 
     pub fn create_invite(&mut self, nft_collection: AccountId) -> String {
