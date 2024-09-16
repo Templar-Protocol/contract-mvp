@@ -208,7 +208,7 @@ impl TemplarProtocol {
         collateral_amount: U128,
         borrow_amount: U128,
     ) -> Promise {
-        let mut vault = self.vaults.get(&vault_id).expect("Vault not found");
+        let vault = self.vaults.get(&vault_id).expect("Vault not found");
         let nft_collection = self.get_nft_collection_for_vault(&vault_id);
         require!(
             self.owns_nft(&env::predecessor_account_id(), &nft_collection.to_string()),
@@ -241,12 +241,6 @@ impl TemplarProtocol {
                         borrow_amount,
                     )
             )
-            // 4. Return a promise that resolves to a boolean indicating success or failure
-            .then(
-                Self::ext(env::current_account_id())
-                    .with_static_gas(Gas::from_tgas(5))
-                    .on_borrow_complete()
-            )
     }
 
     #[private]
@@ -257,7 +251,7 @@ impl TemplarProtocol {
         collateral_amount: U128,
         borrowed_amount: U128,
         #[callback_result] transfer_result: Result<U128, PromiseError>,
-    ) -> bool {
+    ) -> Promise {
         if let Ok(unused_amount) = transfer_result {
             if unused_amount.0 > 0 {
                 env::log_str(&format!(
@@ -273,7 +267,7 @@ impl TemplarProtocol {
                 collateral_amount: collateral_amount.0,
                 borrowed_amount: borrowed_amount.0,
                 timestamp: env::block_timestamp(),
-                borrower,
+                borrower: borrower.clone(),
             });
             self.vaults.insert(&vault_id, &vault);
             env::log_str(&format!(
@@ -286,18 +280,12 @@ impl TemplarProtocol {
                 .with_attached_deposit(NearToken::from_yoctonear(1))
                 .with_static_gas(Gas::from_tgas(10))
                 .ft_transfer(borrower, borrowed_amount, None)
-                .then(
-                    Self::ext(env::current_account_id())
-                        .with_static_gas(Gas::from_tgas(5))
-                        .on_borrow_complete()
-                )
-                .return_value(true);
         } else {
             env::log_str(&format!(
                 "Account {} failed to borrow {} stablecoins from vault {}",
-                borrower, collateral_amount.0, vault_id
+                borrower, borrowed_amount.0, vault_id
             ));
-            false
+            Promise::new(env::current_account_id())
         }
     }
 
