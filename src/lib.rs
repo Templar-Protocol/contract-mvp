@@ -123,7 +123,7 @@ impl TemplarProtocol {
     }
 
     #[payable]
-    pub fn lend(&mut self, vault_id: String, amount: U128) -> Promise {
+    pub fn deposit_stablecoin(&mut self, vault_id: String, amount: U128) -> Promise {
         let nft_collection = self.get_nft_collection_for_vault(&vault_id);
         require!(
             self.owns_nft(&env::predecessor_account_id(), &nft_collection.to_string()),
@@ -146,11 +146,11 @@ impl TemplarProtocol {
             )
             .then(Self::ext(env::current_account_id())
                 .with_static_gas(Gas::from_tgas(5))
-                .on_lend_callback(vault_id, env::predecessor_account_id(), amount))
+                .on_deposit_stablecoin_callback(vault_id, env::predecessor_account_id(), amount))
     }
 
     #[private]
-    pub fn on_lend_callback(
+    pub fn on_deposit_stablecoin_callback(
         &mut self,
         vault_id: String,
         lender: AccountId,
@@ -539,7 +539,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lend() {
+    fn test_deposit_stablecoin() {
         let mut context = get_context(accounts(1));
         testing_env!(context.attached_deposit(NFT_MINT_FEE).build());
         let mut contract = TemplarProtocol::new();
@@ -547,9 +547,9 @@ mod tests {
         // Create a vault first
         let (vault_id, _) = contract.create_vault(accounts(2), accounts(3), accounts(4), 150);
 
-        // Test lend
+        // Test deposit_stablecoin
         let deposit_amount = U128(1000);
-        let _result = contract.lend(vault_id.clone(), deposit_amount);
+        let _result = contract.deposit_stablecoin(vault_id.clone(), deposit_amount);
 
         // Check if the vault balance is updated
         let updated_vault = contract.vaults.get(&vault_id).unwrap();
