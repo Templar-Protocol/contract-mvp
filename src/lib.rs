@@ -15,14 +15,14 @@ use near_sdk::{
     collections::{LazyOption, LookupMap, UnorderedMap},
     env,
     json_types::U128,
-    near, require, AccountId, BorshStorageKey, Gas, NearToken, Promise, PromiseError,
-    PromiseOrValue,
+    near, require, AccountId, BorshStorageKey, Gas, NearToken, PanicOnDefault, Promise,
+    PromiseError, PromiseOrValue,
 };
 
 mod vault;
 use vault::{Deposit, Loan, Vault};
 
-const NFT_MINT_FEE: NearToken = NearToken::from_near(1);
+pub const NFT_MINT_FEE: NearToken = NearToken::from_near(1);
 
 #[derive(BorshStorageKey, Debug, Clone, Copy, Hash)]
 #[near(serializers = [borsh])]
@@ -37,6 +37,7 @@ enum StorageKey {
     Invites,
 }
 
+#[derive(PanicOnDefault)]
 #[near(contract_state)]
 pub struct TemplarProtocol {
     vaults: LookupMap<String, Vault>,
@@ -239,7 +240,7 @@ impl TemplarProtocol {
                         env::predecessor_account_id(),
                         collateral_amount,
                         borrow_amount,
-                    )
+                    ),
             )
     }
 
