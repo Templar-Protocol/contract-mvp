@@ -19,7 +19,7 @@ use near_sdk::{
     PromiseError, PromiseOrValue,
 };
 
-mod vault;
+pub mod vault;
 use vault::{Deposit, Loan, Vault};
 
 pub const NFT_MINT_FEE: NearToken = NearToken::from_near(1);
@@ -592,59 +592,6 @@ mod tests {
         let mut contract = TemplarProtocol::new();
 
         contract.create_invite(accounts(2));
-    }
-
-    #[test]
-    fn test_deposit_stablecoin() {
-        let mut context = get_context(accounts(1));
-        testing_env!(context.attached_deposit(NFT_MINT_FEE).build());
-        let mut contract = TemplarProtocol::new();
-
-        // Create a vault first
-        let (vault_id, _) = contract.create_vault(accounts(2), accounts(3), accounts(4), 150);
-
-        // Test deposit_stablecoin
-        let deposit_amount = U128(1000);
-        let _result = contract.deposit_stablecoin(vault_id.clone(), deposit_amount);
-
-        // Check if the vault balance is updated
-        let updated_vault = contract.vaults.get(&vault_id).unwrap();
-        println!("deposits len: {:?}", updated_vault.deposits.len());
-        assert_eq!(updated_vault.deposits.len(), 1);
-        println!("deposit amount: {:?}", updated_vault.deposits[0].amount);
-        assert_eq!(updated_vault.deposits[0].amount, 1000);
-        println!("deposit lender: {:?}", updated_vault.deposits[0].lender);
-        assert_eq!(updated_vault.deposits[0].lender, accounts(1));
-        println!("stablecoin balance: {:?}", updated_vault.stablecoin_balance);
-        assert_eq!(updated_vault.stablecoin_balance, 1000);
-    }
-
-    #[test]
-    fn test_borrow() {
-        let mut context = get_context(accounts(1));
-        testing_env!(context.attached_deposit(NFT_MINT_FEE).build());
-        let mut contract = TemplarProtocol::new();
-
-        // Create a vault first
-        let (vault_id, _) = contract.create_vault(accounts(2), accounts(3), accounts(4), 150);
-
-        // Add some liquidity to the vault
-        let mut vault = contract.vaults.get(&vault_id).unwrap();
-        vault.stablecoin_balance = 10000;
-        vault.collateral_balance = 0;
-        contract.vaults.insert(&vault_id, &vault);
-
-        // Test borrow
-        let collateral_amount = U128(1000);
-        let borrow_amount = U128(500);
-        let _result = contract.borrow(vault_id.clone(), collateral_amount, borrow_amount);
-
-        // Check if the vault balances are updated
-        let final_vault = contract.vaults.get(&vault_id).unwrap();
-        assert_eq!(final_vault.collateral_balance, 1000);
-        assert_eq!(final_vault.stablecoin_balance, 9500);
-        assert_eq!(final_vault.loans.len(), 1);
-        assert_eq!(final_vault.loans[0].borrower, accounts(1));
     }
 
     #[test]

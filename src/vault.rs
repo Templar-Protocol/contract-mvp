@@ -3,7 +3,7 @@ use std::str::FromStr;
 use near_contract_standards::fungible_token::Balance;
 use near_sdk::{near, AccountId, AccountIdRef};
 
-#[near]
+#[near(serializers = [borsh])]
 pub struct Loan {
     pub collateral_amount: u128,
     pub borrowed_amount: u128,
@@ -11,7 +11,7 @@ pub struct Loan {
     pub borrower: AccountId,
 }
 
-#[near]
+#[near(serializers = [borsh])]
 pub struct Deposit {
     pub amount: u128,
     pub timestamp: u64,
@@ -19,7 +19,7 @@ pub struct Deposit {
 }
 
 // TODO: add vault id to struct, nft id and update all methods that use vault id
-#[near]
+#[near(serializers = [borsh])]
 pub struct Vault {
     pub collateral_asset: AccountId,
     pub stablecoin_asset: AccountId,
@@ -58,6 +58,7 @@ pub fn construct_id(collateral_asset: &AccountIdRef, stablecoin_asset: &AccountI
     format!("{collateral_asset}:{stablecoin_asset}")
 }
 
+#[near(serializers = [borsh])]
 pub enum Message {
     Deposit { vault_id: String },
     Collateral { vault_id: String },
