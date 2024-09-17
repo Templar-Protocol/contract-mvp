@@ -1,5 +1,4 @@
 use contract_mvp::{vault::Vault, NFT_MINT_FEE};
-use near_contract_standards::fungible_token::metadata::FungibleTokenMetadata;
 use near_sdk::{AccountId, NearToken};
 use near_workspaces::{
     network::Sandbox, prelude::TopLevelAccountCreator, Account, Contract, DevNetwork, Worker,
@@ -33,24 +32,21 @@ async fn deploy_mock_ft(
     symbol: &str,
     total_supply: u128,
 ) -> Contract {
-    let ft_wasm = near_workspaces::compile_project("./res/fungible_token.wasm")
+    let contract = worker
+        .dev_deploy(include_bytes!("../res/mock_ft.wasm"))
         .await
         .unwrap();
-    let contract = worker.dev_deploy(&ft_wasm).await.unwrap();
 
     contract
         .call("new")
         .args_json(json!({
             "owner_id": account_id,
             "total_supply": total_supply.to_string(),
-            "metadata": FungibleTokenMetadata {
-                spec: "ft-1.0.0".to_string(),
-                name: name.to_string(),
-                symbol: symbol.to_string(),
-                icon: None,
-                reference: None,
-                reference_hash: None,
-                decimals: 24,
+            "metadata": {
+                "spec": "ft-1.0.0",
+                "name": name,
+                "symbol": symbol,
+                "decimals": 24
             }
         }))
         .transact()
@@ -80,10 +76,22 @@ async fn setup() -> (Worker<Sandbox>, Contract) {
 
 #[tokio::test]
 async fn test_create_vault() {
-    let (sandbox, contract) = setup().await;
-    accounts!(sandbox, user, nft_collection, collateral_asset, stablecoin);
+    let worker = near_workspaces::sandbox().await.unwrap();
+    let contract = worker
+        .dev_deploy(&near_workspaces::compile_project("./").await.unwrap())
+        .await
+        .unwrap();
+    accounts!(worker, user, nft_collection, collateral_asset, stablecoin);
 
-    let (vault_id, token_id) = user
+    // Initialize the contract
+    contract
+        .call("new")
+        .args_json(json!({}))
+        .transact()
+        .await
+        .unwrap();
+
+    let result = user
         .call(contract.id(), "create_vault")
         .args_json(json!({
             "nft_collection": nft_collection.id(),
@@ -94,19 +102,26 @@ async fn test_create_vault() {
         .deposit(NFT_MINT_FEE)
         .transact()
         .await
-        .unwrap()
-        .json::<(String, String)>()
         .unwrap();
 
-    assert_eq!(
-        vault_id,
-        format!("{}:{}", collateral_asset.id(), stablecoin.id()),
-        "Vault ID formatted incorrectly",
-    );
-    assert_eq!(
-        token_id, "1",
-        "Token ID generated incorrectly or out-of-sequence",
-    );
+    assert!(result.is_success());
+
+    let (vault_id, _) = result.json::<(String, String)>().unwrap();
+    println!("Created vault with ID: {}", vault_id);
+
+    // Verify the vault was created
+    let vault: serde_json::Value = contract
+        .view("vaults")
+        .args_json(json!({ "key": vault_id }))
+        .await
+        .unwrap()
+        .json()
+        .unwrap();
+
+    assert_eq!(vault["nft_collection"], nft_collection.id().to_string());
+    assert_eq!(vault["collateral_asset"], collateral_asset.id().to_string());
+    assert_eq!(vault["stablecoin"], stablecoin.id().to_string());
+    assert_eq!(vault["min_collateral_ratio"], "150");
 }
 
 #[tokio::test]

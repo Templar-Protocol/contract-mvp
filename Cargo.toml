@@ -48,3 +48,7 @@ debug = false
 panic = "abort"
 # Opt into extra safety checks on arithmetic operations https://stackoverflow.com/a/64136471/249801
 overflow-checks = true
+
+[[bin]]
+name = "mock_ft"
+path = "res/mock_ft.rs"
