@@ -6,6 +6,8 @@ use near_sdk::{
     near, require, AccountId, BorshStorageKey, PanicOnDefault, PromiseOrValue,
 };
 
+pub mod api;
+
 pub mod asset;
 use asset::FungibleAsset;
 
