@@ -1,10 +1,13 @@
+use std::sync::atomic::{AtomicU8, Ordering};
+
 use contract_mvp::ViewVault;
 use near_sdk::{
     json_types::{U128, U64},
-    AccountId,
+    AccountId, AccountIdRef,
 };
 use near_workspaces::{
-    network::Sandbox, prelude::TopLevelAccountCreator, Account, Contract, DevNetwork, Worker,
+    network::Sandbox, operations::Function, prelude::TopLevelAccountCreator, Account, Contract,
+    DevNetwork, Worker,
 };
 use serde_json::json;
 
@@ -71,22 +74,74 @@ async fn setup() -> (Worker<Sandbox>, Contract) {
     (sandbox, contract)
 }
 
+enum ContractWasm {
+    Vault,
+    MockFt,
+}
+
+static V: AtomicU8 = AtomicU8::new(0);
+
+#[test]
+fn order1() {
+    let i = V.fetch_add(1, Ordering::Relaxed);
+    println!("previous: {i}");
+}
+
+#[test]
+fn order2() {
+    let i = V.fetch_add(10, Ordering::Relaxed);
+    println!("previous: {i}");
+}
+
+async fn contract_wasm(which: ContractWasm) -> &'static [u8] {
+    // match which {
+    //     ContractWasm::Vault => {
+    //         static WASM: Mutex<Option<&[u8]>> = Mutex::new(None);
+    //         let lock = WASM.lock().unwrap();
+    //         if lock.
+    //         *WASM.lock().unwrap() = Some(b"8");
+    //     }
+    //     ContractWasm::MockFt => {}
+    // }
+
+    todo!()
+}
+
+async fn deploy_ft(
+    account: &Account,
+    name: &str,
+    symbol: &str,
+    owner_id: &AccountIdRef,
+    supply: u128,
+) {
+    let wasm = near_workspaces::compile_project("./mock/ft/")
+        .await
+        .unwrap();
+    account
+        .batch(account.id())
+        .deploy(&wasm)
+        .call(Function::new("new").args_json(json!({
+            "name": name,
+            "symbol": symbol,
+            "owner_id": owner_id,
+            "supply": U128(supply),
+        })))
+        .transact()
+        .await
+        .unwrap()
+        .unwrap();
+}
+
 // ===== TESTS =====
 
 #[tokio::test]
 async fn test_create_vault() {
     let (worker, contract) = setup().await;
-    accounts!(worker, user, nft_collection, collateral_asset, stablecoin);
-
-    // nft_gate: Option<AccountId>,
-    // loan_asset_id: AccountId,
-    // collateral_asset_id: AccountId,
-    // min_collateral_ratio: (u8, u8),
+    accounts!(worker, user, collateral_asset, stablecoin);
 
     let result = user
         .call(contract.id(), "create_vault")
         .args_json(json!({
-            "nft_gate": nft_collection.id(),
             "loan_asset_id": stablecoin.id(),
             "collateral_asset_id": collateral_asset.id(),
             "min_collateral_ratio": [150, 100],
@@ -109,7 +164,6 @@ async fn test_create_vault() {
         .json::<ViewVault>()
         .unwrap();
 
-    assert_eq!(&vault.nft_gate.unwrap(), nft_collection.id());
     assert_eq!(
         &vault.collateral_asset_id.into_nep141().unwrap(),
         collateral_asset.id(),

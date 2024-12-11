@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use near_sdk::{
-    collections::{LazyOption, TreeMap, UnorderedMap},
+    collections::{TreeMap, UnorderedMap},
     env, near, AccountId, BorshStorageKey, IntoStorageKey,
 };
 
@@ -10,7 +10,6 @@ use crate::asset::FungibleAsset;
 #[derive(BorshStorageKey)]
 #[near]
 enum StorageKey {
-    NftGate,
     Lenders,
     Borrowers,
     TotalLoanAssetDepositedLog,
@@ -47,7 +46,6 @@ pub struct Vault {
     pub loan_asset_id: FungibleAsset,
     pub collateral_asset_id: FungibleAsset,
     pub min_collateral_ratio: (u8, u8),
-    pub nft_gate: LazyOption<AccountId>,
     total_loan_asset_deposited: u128,
     total_loan_asset_borrowed: u128,
     total_collateral_asset_deposited: u128,
@@ -63,7 +61,6 @@ impl Vault {
         loan_asset_id: FungibleAsset,
         collateral_asset_id: FungibleAsset,
         min_collateral_ratio: (u8, u8),
-        nft_gate: Option<AccountId>,
     ) -> Self {
         let prefix = prefix.into_storage_key();
         macro_rules! key {
@@ -83,7 +80,6 @@ impl Vault {
             total_loan_asset_deposited: 0,
             total_loan_asset_borrowed: 0,
             total_collateral_asset_deposited: 0,
-            nft_gate: LazyOption::new(key!(NftGate), nft_gate.as_ref()),
             lenders: UnorderedMap::new(key!(Lenders)),
             borrowers: UnorderedMap::new(key!(Borrowers)),
             total_loan_asset_deposited_log: TreeMap::new(key!(TotalLoanAssetDepositedLog)),

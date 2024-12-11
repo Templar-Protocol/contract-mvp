@@ -45,7 +45,6 @@ impl TemplarProtocol {
     #[payable]
     pub fn create_vault(
         &mut self,
-        nft_gate: Option<AccountId>,
         loan_asset_id: AccountId,
         collateral_asset_id: AccountId,
         min_collateral_ratio: (u8, u8),
@@ -56,7 +55,6 @@ impl TemplarProtocol {
             FungibleAsset::Nep141(loan_asset_id),
             FungibleAsset::Nep141(collateral_asset_id),
             min_collateral_ratio,
-            nft_gate,
         );
 
         self.vaults.insert(&vault_id, &vault);
@@ -71,7 +69,6 @@ impl TemplarProtocol {
             loan_asset_id: vault.loan_asset_id,
             collateral_asset_id: vault.collateral_asset_id,
             min_collateral_ratio: vault.min_collateral_ratio,
-            nft_gate: vault.nft_gate.get(),
         }
     }
 }
@@ -82,7 +79,6 @@ pub struct ViewVault {
     pub loan_asset_id: FungibleAsset,
     pub collateral_asset_id: FungibleAsset,
     pub min_collateral_ratio: (u8, u8),
-    pub nft_gate: Option<AccountId>,
 }
 
 #[near(serializers = [json])]
