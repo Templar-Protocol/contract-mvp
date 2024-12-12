@@ -112,8 +112,18 @@ pub struct MarketConfiguration {
     /// This is paid by the borrower during repayment (or liquidation).
     pub origination_fee: OriginationFee, // e.g. always 0.5%
     pub apy: Ratio,
-    pub maximum_loan_duration: U64,
+    pub maximum_borrow_duration: U64,
+    pub minimum_borrow_amount: U128,
+    pub maximum_borrow_amount: U128,
+    pub withdrawal_fee_behavior: WithdrawalFeeBehavior,
     pub liquidation_spread: LiquidationSpread,
+}
+
+pub enum WithdrawalFeeBehavior {
+    FixedFee { fee: Ratio },
+    DisallowedBefore { duration: U64 },
+    FixedFeeUntil { fee: Ratio, duration: U64 },
+    LinearFeeUntil { fee_at_start: Ratio, duration: U64 },
 }
 
 pub struct LiquidationSpread {
