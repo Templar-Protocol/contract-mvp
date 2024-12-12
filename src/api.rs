@@ -5,18 +5,13 @@ use near_sdk::{
 
 // #[near_sdk::ext_contract(ext_market)]
 pub trait MarketExternal {
+    // ========================
+    // MARKET GENERAL FUNCTIONS
+    // ========================
+
     fn get_configuration(&self) -> MarketConfiguration;
-    fn get_position(&self, account_id: AccountId) -> Borrow;
-    /// This is just a read-only function, so we don't care about validating
-    /// the provided price data.
-    fn can_be_liquidated(&self, account_id: AccountId, collateral_asset_price: ()) -> bool;
     fn get_borrow_asset_metrics(&self) -> BorrowAssetMetrics;
     fn get_collateral_asset_provided(&self) -> U128;
-    /// Works for both registered and unregistered accounts.
-    fn get_deposit_address_for(&self, account_id: AccountId, collateral_asset: AssetId) -> String;
-
-    fn create_borrow_intent(&mut self, borrow_asset_amount: U128, collateral_asset_amount: U128);
-    fn borrow(&mut self, amount: U128);
 
     // TODO: Decide how to work with remote balances:
 
@@ -27,17 +22,40 @@ pub trait MarketExternal {
     /// Option 2: Balance oracle creates/maintains separate NEP-141-ish contracts that track remote
     /// balances.
 
+    fn list_borrowers(&self, offset: Option<U64>, count: Option<U64>) -> Vec<AccountId>;
+    fn list_lenders(&self, offset: Option<U64>, count: Option<U64>) -> Vec<AccountId>;
+
     /// This function does need to retrieve a "proof-of-price" from somewhere, e.g. oracle.
     fn liquidate(&mut self, account_id: AccountId, meta: ()) -> ();
 
-    // LENDER FUNCTIONS
-    // We assume that all borrowed assets are NEAR-local. That is to say, we don't support lending
-    // of remote assets.
+    // ==================
+    // BORROWER FUNCTIONS
+    // ==================
 
     // Required to implement NEP-141 FT token receiver to receive local fungible tokens.
-    // ft_on_receive :: repay | provide
+    // ft_on_receive :: where msg = "repay"
 
-    /// Returns a withdrawal queue position ID.
+    fn get_borrower_position(&self, account_id: AccountId) -> Borrow;
+    /// This is just a read-only function, so we don't care about validating
+    /// the provided price data.
+    fn get_borrow_status(&self, account_id: AccountId, collateral_asset_price: ()) -> BorrowStatus;
+    /// Works for both registered and unregistered accounts.
+    fn get_deposit_address_for(&self, account_id: AccountId, collateral_asset: AssetId) -> String;
+
+    fn initialize_borrow(&mut self, borrow_asset_amount: U128, collateral_asset_amount: U128);
+    fn borrow(&mut self, amount: U128);
+
+    // ================
+    // LENDER FUNCTIONS
+    // ================
+    // We assume that all borrowed assets are NEAR-local. That is to say, we
+    // don't yet support lending of remote assets.
+
+    // Required to implement NEP-141 FT token receiver to receive local fungible tokens.
+    // ft_on_receive :: where msg = "provide"
+
+    fn get_lender_position(&self, account_id: AccountId) -> Borrow;
+
     /// Auto-harvests yield.
     fn queue_withdrawal(&mut self, amount: U128);
     fn rescind_withrawal(&mut self);
@@ -45,11 +63,18 @@ pub trait MarketExternal {
 
     fn harvest_yield(&mut self);
 
+    // =================
     // REWARDS FUNCTIONS
+    // =================
     fn withdraw_lender_rewards(&mut self, amount: U128);
     fn withdraw_liquidator_rewards(&mut self, amount: U128);
     fn withdraw_protocol_rewards(&mut self, amount: U128);
     // fn withdraw_insurance_rewards(&mut self, amount: U128);
+}
+
+pub enum BorrowStatus {
+    Healthy,
+    Liquidation,
 }
 
 /// available = floor((provided - used) * maximum_borrow_asset_usage_ratio)
