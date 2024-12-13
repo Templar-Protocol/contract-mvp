@@ -8,9 +8,6 @@ use near_sdk::{
 
 pub mod api;
 
-pub mod asset;
-use asset::FungibleAsset;
-
 pub mod vault;
 use vault::Vault;
 

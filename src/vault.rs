@@ -5,8 +5,6 @@ use near_sdk::{
     env, near, AccountId, BorshStorageKey, IntoStorageKey,
 };
 
-use crate::asset::FungibleAsset;
-
 #[derive(BorshStorageKey)]
 #[near]
 enum StorageKey {

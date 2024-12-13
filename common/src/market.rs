@@ -1,8 +1,8 @@
-use near_sdk::{
-    json_types::{U128, U64},
-    AccountId,
-};
-use templar_common::{
+use near_sdk::json_types::{U128, U64};
+use near_sdk::AccountId;
+
+use crate::{
+    asset::FungibleAsset,
     fee::{Fee, TimeBasedFee},
     rational::Rational,
 };
@@ -21,7 +21,7 @@ pub trait MarketExternal {
 
     // Option 1:
     // Balance oracle calls this function directly.
-    fn report_remote_asset_balance(&mut self, address: String, asset: AssetId, amount: U128);
+    fn report_remote_asset_balance(&mut self, address: String, asset: String, amount: U128);
 
     // Option 2: Balance oracle creates/maintains separate NEP-141-ish contracts that track remote
     // balances.
@@ -44,7 +44,7 @@ pub trait MarketExternal {
     /// the provided price data.
     fn get_borrow_status(&self, account_id: AccountId, collateral_asset_price: ()) -> BorrowStatus;
     /// Works for both registered and unregistered accounts.
-    fn get_deposit_address_for(&self, account_id: AccountId, collateral_asset: AssetId) -> String;
+    fn get_deposit_address_for(&self, account_id: AccountId, collateral_asset: String) -> String;
 
     fn initialize_borrow(&mut self, borrow_asset_amount: U128, collateral_asset_amount: U128);
     fn borrow(&mut self, amount: U128);
@@ -89,15 +89,9 @@ pub struct BorrowAssetMetrics {
     pub provided: U128,
 }
 
-/// This might just end up being a string
-pub struct AssetId {
-    pub address: String, // | Native,
-    pub chain_id: u64,
-}
-
 pub struct MarketConfiguration {
-    pub borrow_asset_id: AssetId,
-    pub collateral_asset_id: AssetId,
+    pub borrow_asset_id: FungibleAsset,
+    pub collateral_asset_id: FungibleAsset,
     pub balance_oracle_account_id: AccountId,
     pub minimum_collateral_ratio_per_loan: Rational<u16>,
     /// How much of the deposited principal may be lent out (up to 100%)?
