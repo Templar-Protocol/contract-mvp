@@ -1,7 +1,11 @@
-use near_sdk::json_types::{U128, U64};
+use near_sdk::{
+    json_types::{U128, U64},
+    near,
+};
 
 use crate::rational::Rational;
 
+#[near]
 pub enum Fee {
     Flat(U128),
     Proportional(Rational<u16>),
@@ -11,20 +15,21 @@ impl Fee {
     pub fn of(&self, amount: u128) -> Option<u128> {
         match self {
             Fee::Flat(f) => Some(f.0),
-            Fee::Proportional(rational) => rational
-                .upcast::<u128>()
-                .checked_scalar_mul(amount)?
-                .evaluate_ceil(),
+            Fee::Proportional(rational) => {
+                rational.upcast::<u128>().checked_scalar_mul(amount)?.ceil()
+            }
         }
     }
 }
 
+#[near]
 pub struct TimeBasedFee {
     pub fee: Fee,
     pub duration: U64,
     pub behavior: TimeBasedFeeFunction,
 }
 
+#[near]
 pub enum TimeBasedFeeFunction {
     Fixed,
     Linear,

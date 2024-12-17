@@ -16,7 +16,7 @@ enum StorageKey {
 
 #[near]
 pub struct LenderEntry {
-    pub loan_asset_deposited: u128,
+    pub borrow_asset_deposited: u128,
     pub collateral_asset_fees_earned: u128,
     collateral_asset_fee_distribution_updated_until_block_height: u64,
 }
@@ -24,7 +24,7 @@ pub struct LenderEntry {
 impl LenderEntry {
     pub fn new(block_height: u64) -> Self {
         Self {
-            loan_asset_deposited: 0,
+            borrow_asset_deposited: 0,
             collateral_asset_fees_earned: 0,
             collateral_asset_fee_distribution_updated_until_block_height: block_height,
         }
@@ -118,8 +118,8 @@ impl Vault {
             .get(lender_id)
             .unwrap_or_else(|| LenderEntry::new(env::block_height()));
 
-        lender_entry.loan_asset_deposited = lender_entry
-            .loan_asset_deposited
+        lender_entry.borrow_asset_deposited = lender_entry
+            .borrow_asset_deposited
             .checked_add(amount)
             .unwrap_or_else(|| env::panic_str("Loan asset deposited overflow"));
 
@@ -139,8 +139,8 @@ impl Vault {
             .get(lender_id)
             .unwrap_or_else(|| LenderEntry::new(env::block_height()));
 
-        lender_entry.loan_asset_deposited = lender_entry
-            .loan_asset_deposited
+        lender_entry.borrow_asset_deposited = lender_entry
+            .borrow_asset_deposited
             .checked_sub(amount)
             .unwrap_or_else(|| env::panic_str("Loan asset deposited underflow"));
 
@@ -279,7 +279,7 @@ impl Vault {
 
             // this discards fractional fees
             let portion_of_fees = fees
-                .checked_mul(lender_entry.loan_asset_deposited)
+                .checked_mul(lender_entry.borrow_asset_deposited)
                 .unwrap()
                 .checked_div(total_loan_asset_deposited_at_distribution)
                 .unwrap();

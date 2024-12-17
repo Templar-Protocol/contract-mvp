@@ -3,9 +3,12 @@ use std::{
     ops::{BitXor, Div, Sub},
 };
 
+use near_sdk::near;
+
 /// NOTE: It may be prudent to have two different "ratio" types: one for any
 /// positive rational, and one restricted to values [0, 1].
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[near]
 pub struct Rational<T>(T, T);
 
 #[allow(clippy::eq_op)]
@@ -56,7 +59,7 @@ impl<T: Div<Output = T> + BitXor<Output = T> + Sub<Output = T> + Copy + Eq + Ord
 macro_rules! impl_rational {
     ($t:ty) => {
         impl Rational<$t> {
-            pub fn evaluate_floor(self) -> Option<$t> {
+            pub fn floor(self) -> Option<$t> {
                 let Self(n, d) = self;
 
                 if d == 0 {
@@ -66,7 +69,7 @@ macro_rules! impl_rational {
                 Some(n / d)
             }
 
-            pub fn evaluate_ceil(self) -> Option<$t> {
+            pub fn ceil(self) -> Option<$t> {
                 let Self(n, d) = self;
 
                 if d == 0 {
