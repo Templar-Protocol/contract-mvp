@@ -3,6 +3,7 @@ use near_sdk::{near, AccountId, PromiseOrValue};
 
 use crate::{
     asset::FungibleAsset,
+    borrow::{BorrowPosition, BorrowStatus},
     fee::{Fee, TimeBasedFee},
     rational::Rational,
 };
@@ -26,8 +27,8 @@ pub trait MarketExternalInterface {
     // Option 2: Balance oracle creates/maintains separate NEP-141-ish contracts that track remote
     // balances.
 
-    fn list_borrowers(&self, offset: Option<U64>, count: Option<U64>) -> Vec<AccountId>;
-    fn list_lenders(&self, offset: Option<U64>, count: Option<U64>) -> Vec<AccountId>;
+    fn list_borrows(&self, offset: Option<U64>, count: Option<U64>) -> Vec<AccountId>;
+    fn list_lends(&self, offset: Option<U64>, count: Option<U64>) -> Vec<AccountId>;
 
     /// This function does need to retrieve a "proof-of-price" from somewhere, e.g. oracle.
     fn liquidate(&mut self, account_id: AccountId, meta: ()) -> ();
@@ -40,7 +41,7 @@ pub trait MarketExternalInterface {
     // ft_on_receive :: where msg = collateralize
     // ft_on_receive :: where msg = repay
 
-    fn get_borrower_position(&self, account_id: AccountId) -> Option<BorrowerPosition>;
+    fn get_borrow_position(&self, account_id: AccountId) -> Option<BorrowPosition>;
     /// This is just a read-only function, so we don't care about validating
     /// the provided price data.
     fn get_borrow_status(
@@ -73,7 +74,7 @@ pub trait MarketExternalInterface {
     // Required to implement NEP-141 FT token receiver to receive local fungible tokens.
     // ft_on_receive :: where msg = lend
 
-    fn get_lender_position(&self, account_id: AccountId) -> LenderPosition;
+    fn get_lend_position(&self, account_id: AccountId) -> LendPosition;
 
     fn queue_withdrawal(&mut self, amount: U128);
     fn cancel_withrawal(&mut self);
@@ -85,15 +86,10 @@ pub trait MarketExternalInterface {
     // =================
     // REWARDS FUNCTIONS
     // =================
-    fn withdraw_lender_rewards(&mut self, amount: U128);
+    fn withdraw_lend_position_rewards(&mut self, amount: U128);
     fn withdraw_liquidator_rewards(&mut self, amount: U128);
     fn withdraw_protocol_rewards(&mut self, amount: U128);
     // fn withdraw_insurance_rewards(&mut self, amount: U128);
-}
-
-pub enum BorrowStatus {
-    Healthy,
-    Liquidation,
 }
 
 /// Borrow asset metrics are related as follows:
@@ -171,7 +167,7 @@ pub struct MarketConfiguration {
 #[derive(Clone, Debug)]
 #[near]
 pub struct LiquidationSpread {
-    pub lender: U128,
+    pub lend_position: U128,
     pub liquidator: U128,
     pub protocol: U128,
     // pub insurance: U128,
@@ -204,13 +200,13 @@ impl RewardRecord {
 }
 
 #[near]
-pub struct LenderPosition {
+pub struct LendPosition {
     pub borrow_asset_deposited: U128,
     pub borrow_asset_rewards: RewardRecord,
     pub collateral_asset_rewards: RewardRecord,
 }
 
-impl LenderPosition {
+impl LendPosition {
     pub fn new(block_height: u64) -> Self {
         Self {
             borrow_asset_deposited: 0.into(),
@@ -219,67 +215,14 @@ impl LenderPosition {
         }
     }
 
-    pub fn increase_deposit(&mut self, amount: u128) -> Option<U128> {
+    pub fn deposit_borrow_asset(&mut self, amount: u128) -> Option<U128> {
         self.borrow_asset_deposited.0 = self.borrow_asset_deposited.0.checked_add(amount)?;
         Some(self.borrow_asset_deposited)
     }
 
-    pub fn decrease_deposit(&mut self, amount: u128) -> Option<U128> {
+    pub fn withdraw_borrow_asset(&mut self, amount: u128) -> Option<U128> {
         self.borrow_asset_deposited.0 = self.borrow_asset_deposited.0.checked_sub(amount)?;
         Some(self.borrow_asset_deposited)
-    }
-}
-
-#[derive(Default)]
-#[near]
-pub struct BorrowerPosition {
-    pub collateral_asset_deposited: U128,
-    pub borrow_asset_liability: U128,
-}
-
-impl BorrowerPosition {
-    pub fn new() -> Self {
-        Default::default()
-    }
-
-    pub fn is_healthy(
-        &self,
-        collateral_asset_price: Rational<u128>,
-        borrow_asset_price: Rational<u128>,
-        minimum_collateral_ratio: Rational<u128>,
-    ) -> bool {
-        let scaled_collateral_value = self.collateral_asset_deposited.0
-            * collateral_asset_price.numerator()
-            * borrow_asset_price.denominator()
-            * minimum_collateral_ratio.denominator();
-        let scaled_loan_value = self.borrow_asset_liability.0
-            * borrow_asset_price.numerator()
-            * collateral_asset_price.denominator()
-            * minimum_collateral_ratio.numerator();
-
-        scaled_collateral_value >= scaled_loan_value
-    }
-
-    pub fn deposit_collateral_asset(&mut self, amount: u128) -> Option<U128> {
-        self.collateral_asset_deposited.0 =
-            self.collateral_asset_deposited.0.checked_add(amount)?;
-        Some(self.collateral_asset_deposited)
-    }
-
-    pub fn withdraw_collateral_asset(&mut self, amount: u128) -> Option<U128> {
-        self.collateral_asset_deposited.0 =
-            self.collateral_asset_deposited.0.checked_sub(amount)?;
-        Some(self.collateral_asset_deposited)
-    }
-
-    pub fn increase_borrow_asset_liability(&mut self, amount: u128) -> Option<U128> {
-        self.borrow_asset_liability.0 = self.borrow_asset_liability.0.checked_add(amount)?;
-        Some(self.borrow_asset_liability)
-    }
-
-    pub fn decrease_borrow_asset_liability(&mut self, amount: u128) -> Option<U128> {
-        self.borrow_asset_liability.0 = self.borrow_asset_liability.0.checked_sub(amount)?;
-        Some(self.borrow_asset_liability)
     }
 }
 
