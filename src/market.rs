@@ -1,9 +1,16 @@
+use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
 use near_sdk::{
     collections::{TreeMap, UnorderedMap},
-    env, near, AccountId, BorshStorageKey, IntoStorageKey,
+    env,
+    json_types::{U128, U64},
+    near, require, AccountId, BorshStorageKey, IntoStorageKey, PromiseOrValue,
 };
 use templar_common::{
-    market::{BorrowerPosition, LenderPosition, MarketConfiguration},
+    asset::FungibleAsset,
+    market::{
+        BorrowAssetMetrics, BorrowStatus, BorrowerPosition, LenderPosition, MarketConfiguration,
+        MarketExternalInterface, Nep141MarketDepositMessage,
+    },
     rational::Rational,
 };
 
@@ -87,7 +94,7 @@ impl Market {
             .insert(&block_height, &distributed_in_block);
     }
 
-    pub fn record_lender_deposit(&mut self, lender_id: &AccountId, amount: u128) {
+    pub fn record_lender_borrow_asset_deposit(&mut self, lender_id: &AccountId, amount: u128) {
         let mut lender_position = self
             .lenders
             .get(lender_id)
@@ -107,7 +114,7 @@ impl Market {
         self.log_borrow_asset_deposited(self.borrow_asset_deposited);
     }
 
-    pub fn record_lender_withdrawal(&mut self, lender_id: &AccountId, amount: u128) {
+    pub fn record_lender_borrow_asset_withdrawal(&mut self, lender_id: &AccountId, amount: u128) {
         let mut lender_position = self
             .lenders
             .get(lender_id)
@@ -127,11 +134,15 @@ impl Market {
         self.log_borrow_asset_deposited(self.borrow_asset_deposited);
     }
 
-    pub fn record_borrower_collateral_deposit(&mut self, borrower_id: &AccountId, amount: u128) {
+    pub fn record_borrower_collateral_asset_deposit(
+        &mut self,
+        borrower_id: &AccountId,
+        amount: u128,
+    ) {
         let mut borrower_position = self.borrowers.get(borrower_id).unwrap_or_default();
 
         borrower_position
-            .increase_collateral(amount)
+            .deposit_collateral_asset(amount)
             .unwrap_or_else(|| env::panic_str("Borrower collateral overflow"));
 
         self.borrowers.insert(borrower_id, &borrower_position);
@@ -142,11 +153,15 @@ impl Market {
             .unwrap_or_else(|| env::panic_str("Collateral asset balance overflow"));
     }
 
-    pub fn record_borrower_collateral_withdrawal(&mut self, borrower_id: &AccountId, amount: u128) {
+    pub fn record_borrower_collateral_asset_withdrawal(
+        &mut self,
+        borrower_id: &AccountId,
+        amount: u128,
+    ) {
         let mut borrower_position = self.borrowers.get(borrower_id).unwrap_or_default();
 
         borrower_position
-            .decrease_collateral(amount)
+            .withdraw_collateral_asset(amount)
             .unwrap_or_else(|| env::panic_str("Borrower collateral underflow"));
 
         self.borrowers.insert(borrower_id, &borrower_position);
@@ -157,26 +172,31 @@ impl Market {
             .unwrap_or_else(|| env::panic_str("Collateral asset balance underflow"));
     }
 
-    pub fn record_borrower_loan_asset_withdrawal(&mut self, borrower_id: &AccountId, amount: u128) {
+    pub fn record_borrower_borrow_asset_withdrawal(
+        &mut self,
+        borrower_id: &AccountId,
+        liable_amount: u128,
+        dispersed_amount: u128,
+    ) {
         let mut borrower_position = self.borrowers.get(borrower_id).unwrap_or_default();
 
         borrower_position
-            .withdraw(amount)
+            .increase_borrow_asset_liability(liable_amount)
             .unwrap_or_else(|| env::panic_str("Borrower loan asset withdrawn overflow"));
 
         self.borrowers.insert(borrower_id, &borrower_position);
 
         self.borrow_asset_balance = self
             .borrow_asset_balance
-            .checked_sub(amount)
+            .checked_sub(dispersed_amount)
             .unwrap_or_else(|| env::panic_str("Borrow asset balance underflow"));
     }
 
-    pub fn record_borrower_loan_asset_repay(&mut self, borrower_id: &AccountId, amount: u128) {
+    pub fn record_borrower_borrow_asset_repay(&mut self, borrower_id: &AccountId, amount: u128) {
         let mut borrower_position = self.borrowers.get(borrower_id).unwrap_or_default();
 
         borrower_position
-            .repay(amount)
+            .decrease_borrow_asset_liability(amount)
             .unwrap_or_else(|| env::panic_str("Borrower loan asset borrowed underflow"));
 
         self.borrowers.insert(borrower_id, &borrower_position);
@@ -266,29 +286,20 @@ impl Market {
     pub fn can_borrower_be_liquidated(
         &self,
         borrower_id: &AccountId,
-        collateral_asset_multiplier: Rational<u128>,
-        borrow_asset_multiplier: Rational<u128>,
+        collateral_asset_price: Rational<u128>,
+        borrow_asset_price: Rational<u128>,
     ) -> bool {
         let Some(borrower_position) = self.borrowers.get(borrower_id) else {
             return false;
         };
 
-        let scaled_collateral_value = borrower_position.collateral_asset_deposited.0
-            * collateral_asset_multiplier.numerator()
-            * borrow_asset_multiplier.denominator()
-            * self
-                .configuration
+        !borrower_position.is_healthy(
+            collateral_asset_price,
+            borrow_asset_price,
+            self.configuration
                 .minimum_collateral_ratio_per_loan
-                .denominator() as u128;
-        let scaled_loan_value = borrower_position.borrow_asset_withdrawn.0
-            * borrow_asset_multiplier.numerator()
-            * collateral_asset_multiplier.denominator()
-            * self
-                .configuration
-                .minimum_collateral_ratio_per_loan
-                .numerator() as u128;
-
-        scaled_loan_value > scaled_collateral_value
+                .upcast(),
+        )
     }
 
     pub fn record_liquidation(&mut self, borrower_id: &AccountId) {
@@ -298,8 +309,8 @@ impl Market {
 
         let liquidated_collateral = borrower_position.collateral_asset_deposited.0;
         borrower_position.collateral_asset_deposited.0 = 0;
-        let liquidated_loan = borrower_position.borrow_asset_withdrawn.0;
-        borrower_position.borrow_asset_withdrawn.0 = 0;
+        let liquidated_loan = borrower_position.borrow_asset_liability.0;
+        borrower_position.borrow_asset_liability.0 = 0;
         // TODO: Do we distribute the liquidated collateral as fees/rewards?
         // TODO: Do we swap the liqidated funds to the loan asset?
         self.record_collateral_asset_fee_distribution(liquidated_collateral);
@@ -319,5 +330,217 @@ impl Market {
         //     .borrow_asset_balance
         //     .checked_sub(liquidated_loan)
         //     .unwrap_or_else(|| env::panic_str("Total loan asset borrowed underflow"));
+    }
+}
+
+// #[near]
+impl FungibleTokenReceiver for Market {
+    fn ft_on_transfer(
+        &mut self,
+        sender_id: AccountId,
+        amount: U128,
+        msg: String,
+    ) -> PromiseOrValue<U128> {
+        let msg = near_sdk::serde_json::from_str::<Nep141MarketDepositMessage>(&msg)
+            .unwrap_or_else(|_| env::panic_str("Invalid ft_on_transfer msg"));
+
+        let asset_id = FungibleAsset::Nep141(env::predecessor_account_id());
+
+        match msg {
+            Nep141MarketDepositMessage::Lend => {
+                require!(
+                    asset_id == self.configuration.borrow_asset,
+                    "This market does not support lending with this asset",
+                );
+
+                self.record_lender_borrow_asset_deposit(&sender_id, amount.0);
+
+                PromiseOrValue::Value(U128(0))
+            }
+            Nep141MarketDepositMessage::Collateralize => {
+                require!(
+                    asset_id == self.configuration.collateral_asset,
+                    "This market does not support collateralization with this asset",
+                );
+
+                // TODO: This creates a borrow record implicitly. If we
+                // require a discrete "sign-up" step, we will need to add
+                // checks before this function call.
+                self.record_borrower_collateral_asset_deposit(&sender_id, amount.0);
+
+                PromiseOrValue::Value(U128(0))
+            }
+            Nep141MarketDepositMessage::Repay => {
+                require!(
+                    asset_id == self.configuration.borrow_asset,
+                    "This market does not support repayment with this asset",
+                );
+
+                // TODO: This function *errors* on overpayment. Instead, add a
+                // check before and only repay the maximum, then return the excess.
+                self.record_borrower_borrow_asset_repay(&sender_id, amount.0);
+
+                PromiseOrValue::Value(U128(0))
+            }
+        }
+    }
+}
+
+// #[near]
+impl MarketExternalInterface for Market {
+    fn get_configuration(&self) -> MarketConfiguration {
+        self.configuration.clone()
+    }
+
+    fn get_borrow_asset_metrics(&self) -> BorrowAssetMetrics {
+        BorrowAssetMetrics::calculate(
+            self.borrow_asset_deposited,
+            self.borrow_asset_balance,
+            self.configuration.maximum_borrow_asset_usage_ratio.upcast(),
+        )
+    }
+
+    fn get_collateral_asset_balance(&self) -> U128 {
+        self.collateral_asset_balance.into()
+    }
+
+    fn report_remote_asset_balance(&mut self, address: String, asset: String, amount: U128) {
+        todo!()
+    }
+
+    fn list_borrowers(&self, offset: Option<U64>, count: Option<U64>) -> Vec<AccountId> {
+        let offset = offset.map_or(0, |o| o.0 as usize);
+        let count = count.map_or(0, |c| c.0 as usize);
+        self.borrowers.keys().skip(offset).take(count).collect()
+    }
+
+    fn list_lenders(&self, offset: Option<U64>, count: Option<U64>) -> Vec<AccountId> {
+        let offset = offset.map_or(0, |o| o.0 as usize);
+        let count = count.map_or(0, |c| c.0 as usize);
+        self.lenders.keys().skip(offset).take(count).collect()
+    }
+
+    fn liquidate(&mut self, account_id: AccountId, meta: ()) -> () {
+        todo!()
+    }
+
+    fn get_borrower_position(&self, account_id: AccountId) -> Option<BorrowerPosition> {
+        self.borrowers.get(&account_id)
+    }
+
+    fn get_borrow_status(
+        &self,
+        account_id: AccountId,
+        collateral_asset_price: Rational<u128>,
+        borrow_asset_price: Rational<u128>,
+    ) -> Option<BorrowStatus> {
+        let Some(position) = self.borrowers.get(&account_id) else {
+            return None;
+        };
+
+        if position.is_healthy(
+            collateral_asset_price,
+            borrow_asset_price,
+            self.configuration
+                .minimum_collateral_ratio_per_loan
+                .upcast(),
+        ) {
+            Some(BorrowStatus::Healthy)
+        } else {
+            Some(BorrowStatus::Liquidation)
+        }
+    }
+
+    fn get_collateral_asset_deposit_address_for(
+        &self,
+        account_id: AccountId,
+        collateral_asset: String,
+    ) -> String {
+        todo!()
+    }
+
+    fn initialize_borrow(&mut self, borrow_asset_amount: U128, collateral_asset_amount: U128) {
+        todo!()
+    }
+
+    fn borrow(
+        &mut self,
+        amount: U128,
+        collateral_asset_price: Rational<u128>,
+        borrow_asset_price: Rational<u128>,
+    ) -> PromiseOrValue<()> {
+        require!(amount.0 > 0, "Must borrow a nonzero positive amount");
+
+        let mut position = self
+            .borrowers
+            .get(&env::predecessor_account_id())
+            .unwrap_or_default();
+
+        // apply origination fee during borrow by increasing liability during repayment
+        let total_incurred_liability = self
+            .configuration
+            .origination_fee
+            .of(amount.0)
+            .and_then(|fee| amount.0.checked_add(fee))
+            .unwrap_or_else(|| env::panic_str("Fee calculation failed"));
+
+        self.record_borrower_borrow_asset_withdrawal(
+            &env::predecessor_account_id(),
+            total_incurred_liability,
+            amount.0,
+        );
+
+        position
+            .increase_borrow_asset_liability(total_incurred_liability)
+            .unwrap_or_else(|| env::panic_str("Failed to increase borrow asset liability"));
+
+        require!(
+            position.is_healthy(
+                collateral_asset_price,
+                borrow_asset_price,
+                self.configuration
+                    .minimum_collateral_ratio_per_loan
+                    .upcast(),
+            ),
+            "Cannot borrow beyond MCR",
+        );
+
+        PromiseOrValue::Promise(
+            self.configuration
+                .borrow_asset
+                .transfer(env::predecessor_account_id(), amount.0),
+        )
+    }
+
+    fn get_lender_position(&self, account_id: AccountId) -> LenderPosition {
+        todo!()
+    }
+
+    fn queue_withdrawal(&mut self, amount: U128) {
+        todo!()
+    }
+
+    fn cancel_withrawal(&mut self) {
+        todo!()
+    }
+
+    fn process_next_withdrawal(&mut self) {
+        todo!()
+    }
+
+    fn harvest_yield(&mut self) {
+        todo!()
+    }
+
+    fn withdraw_lender_rewards(&mut self, amount: U128) {
+        todo!()
+    }
+
+    fn withdraw_liquidator_rewards(&mut self, amount: U128) {
+        todo!()
+    }
+
+    fn withdraw_protocol_rewards(&mut self, amount: U128) {
+        todo!()
     }
 }

@@ -5,6 +5,7 @@ use near_sdk::{
 
 use crate::rational::Rational;
 
+#[derive(Clone, Debug)]
 #[near]
 pub enum Fee {
     Flat(U128),
@@ -22,6 +23,7 @@ impl Fee {
     }
 }
 
+#[derive(Clone, Debug)]
 #[near]
 pub struct TimeBasedFee {
     pub fee: Fee,
@@ -29,6 +31,7 @@ pub struct TimeBasedFee {
     pub behavior: TimeBasedFeeFunction,
 }
 
+#[derive(Clone, Debug)]
 #[near]
 pub enum TimeBasedFeeFunction {
     Fixed,

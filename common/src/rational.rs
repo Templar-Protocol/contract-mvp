@@ -27,6 +27,10 @@ fn gcd_euclid<T: Ord + Sub<Output = T> + Copy>(mut a: T, mut b: T) -> T {
 }
 
 impl<T: Div<Output = T> + BitXor<Output = T> + Sub<Output = T> + Copy + Eq + Ord> Rational<T> {
+    pub fn new(a: T, b: T) -> Self {
+        Self(a, b).simplify()
+    }
+
     pub fn simplify(self) -> Self {
         let Self(mut n, mut d) = self;
 
