@@ -8,8 +8,9 @@ use near_sdk::{
 use templar_common::{
     asset::FungibleAsset,
     borrow::{BorrowPosition, BorrowStatus},
+    lend::LendPosition,
     market::{
-        BorrowAssetMetrics, LendPosition, MarketConfiguration, MarketExternalInterface,
+        BorrowAssetMetrics, MarketConfiguration, MarketExternalInterface,
         Nep141MarketDepositMessage,
     },
     rational::Rational,
@@ -186,7 +187,7 @@ impl Market {
         account_id: &AccountId,
         liable_amount: u128,
         dispersed_amount: u128,
-    ) {
+    ) -> BorrowPosition {
         let mut borrow_position = self.borrow_positions.get(account_id).unwrap_or_default();
 
         borrow_position
@@ -199,6 +200,8 @@ impl Market {
             .borrow_asset_balance
             .checked_sub(dispersed_amount)
             .unwrap_or_else(|| env::panic_str("Borrow asset balance underflow"));
+
+        borrow_position
     }
 
     pub fn record_borrow_position_borrow_asset_repay(
@@ -242,7 +245,7 @@ impl Market {
         self.lend_positions.insert(account_id, &lend_position);
     }
 
-    pub fn calculate_lender_rewards(
+    pub fn calculate_lend_position_rewards(
         &self,
         reward_distribution_log: &TreeMap<u64, u128>,
         last_updated_block_height: u64,
@@ -490,33 +493,27 @@ impl MarketExternalInterface for Market {
         collateral_asset_price: Rational<u128>,
         borrow_asset_price: Rational<u128>,
     ) -> PromiseOrValue<()> {
-        require!(amount.0 > 0, "Must borrow a nonzero positive amount");
+        require!(amount.0 > 0, "Borrow amount must be greater than zero");
 
-        let mut position = self
-            .borrow_positions
-            .get(&env::predecessor_account_id())
-            .unwrap_or_default();
+        let account_id = env::predecessor_account_id();
 
-        // apply origination fee during borrow by increasing liability during repayment
-        let total_incurred_liability = self
+        // Apply origination fee during borrow by increasing liability during repayment.
+        // liable amount = amount to borrow + fee
+        let liable_amount = self
             .configuration
             .origination_fee
             .of(amount.0)
             .and_then(|fee| amount.0.checked_add(fee))
             .unwrap_or_else(|| env::panic_str("Fee calculation failed"));
 
-        self.record_borrow_position_borrow_asset_withdrawal(
-            &env::predecessor_account_id(),
-            total_incurred_liability,
+        let borrow_position = self.record_borrow_position_borrow_asset_withdrawal(
+            &account_id,
+            liable_amount,
             amount.0,
         );
 
-        position
-            .increase_borrow_asset_liability(total_incurred_liability)
-            .unwrap_or_else(|| env::panic_str("Failed to increase borrow asset liability"));
-
         require!(
-            position.is_healthy(
+            borrow_position.is_healthy(
                 collateral_asset_price,
                 borrow_asset_price,
                 self.configuration
@@ -533,8 +530,8 @@ impl MarketExternalInterface for Market {
         )
     }
 
-    fn get_lend_position(&self, account_id: AccountId) -> LendPosition {
-        todo!()
+    fn get_lend_position(&self, account_id: AccountId) -> Option<LendPosition> {
+        self.lend_positions.get(&account_id)
     }
 
     fn queue_withdrawal(&mut self, amount: U128) {

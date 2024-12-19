@@ -21,6 +21,10 @@ impl BorrowPosition {
         Default::default()
     }
 
+    pub fn exists(&self) -> bool {
+        self.collateral_asset_deposited.0 != 0 || self.borrow_asset_liability.0 != 0
+    }
+
     pub fn is_healthy(
         &self,
         collateral_asset_price: Rational<u128>,
