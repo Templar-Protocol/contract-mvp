@@ -130,15 +130,69 @@ impl BorrowAssetMetrics {
 
 #[test]
 fn test_available_formula() {
-    let maximum_usage_ratio = Rational::<u128>::new(90, 100);
-    let deposited = 10_000_u128;
-    let balance = 5_000_u128;
+    struct Test {
+        maximum_usage_ratio: Rational<u128>,
+        deposited: u128,
+        balance: u128,
+        expected_available: u128,
+        expected_used: u128,
+    }
 
-    let metrics = BorrowAssetMetrics::calculate(deposited, balance, maximum_usage_ratio.upcast());
+    impl Test {
+        fn run(&self) {
+            let metrics = BorrowAssetMetrics::calculate(
+                self.deposited,
+                self.balance,
+                self.maximum_usage_ratio,
+            );
 
-    assert_eq!(metrics.available.0, 4_000);
-    assert_eq!(metrics.used.0, 5_000);
-    assert_eq!(metrics.deposited.0, 10_000);
+            assert_eq!(metrics.available.0, self.expected_available);
+            assert_eq!(metrics.used.0, self.expected_used);
+            assert_eq!(metrics.deposited.0, self.deposited);
+        }
+    }
+
+    let tests = [
+        Test {
+            maximum_usage_ratio: Rational::new(90, 100),
+            deposited: 10000,
+            balance: 5000,
+            expected_available: 4000,
+            expected_used: 5000,
+        },
+        Test {
+            maximum_usage_ratio: Rational::new(0, 100),
+            deposited: 10000,
+            balance: 5000,
+            expected_available: 0,
+            expected_used: 5000,
+        },
+        Test {
+            maximum_usage_ratio: Rational::new(100, 100),
+            deposited: 10000,
+            balance: 5000,
+            expected_available: 5000,
+            expected_used: 5000,
+        },
+        Test {
+            maximum_usage_ratio: Rational::new(100, 100),
+            deposited: 10000,
+            balance: 0,
+            expected_available: 0,
+            expected_used: 10000,
+        },
+        Test {
+            maximum_usage_ratio: Rational::new(100, 100),
+            deposited: 0,
+            balance: 0,
+            expected_available: 0,
+            expected_used: 0,
+        },
+    ];
+
+    for test in tests {
+        test.run();
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -158,7 +212,7 @@ pub struct MarketConfiguration {
     /// liquidation).
     pub origination_fee: Fee,
     pub annual_maintenance_fee: Fee,
-    pub maximum_borrow_duration: U64,
+    pub maximum_borrow_duration: Option<U64>,
     pub minimum_borrow_amount: U128,
     pub maximum_borrow_amount: U128,
     pub withdrawal_fee: TimeBasedFee,
