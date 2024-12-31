@@ -4,13 +4,13 @@ use near_sdk::{
 };
 
 #[near]
-pub struct LendPosition {
+pub struct SupplyPosition {
     pub borrow_asset_deposited: U128,
     pub borrow_asset_rewards: RewardRecord,
     pub collateral_asset_rewards: RewardRecord,
 }
 
-impl LendPosition {
+impl SupplyPosition {
     pub fn new(block_height: u64) -> Self {
         Self {
             borrow_asset_deposited: 0.into(),

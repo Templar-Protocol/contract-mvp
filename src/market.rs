@@ -8,20 +8,20 @@ use near_sdk::{
 use templar_common::{
     asset::FungibleAsset,
     borrow::{BorrowPosition, BorrowStatus},
-    lend::LendPosition,
     market::{
         BorrowAssetMetrics, MarketConfiguration, MarketExternalInterface,
         Nep141MarketDepositMessage,
     },
     rational::Rational,
+    supply::SupplyPosition,
 };
 
 #[derive(BorshStorageKey)]
 #[near]
 enum StorageKey {
-    LendPositions,
+    SupplyPositions,
     BorrowPositions,
-    TotalLoanAssetDepositedLog,
+    TotalBorrowAssetDepositedLog,
     CollateralAssetFeeDistributionLog,
 }
 
@@ -38,9 +38,9 @@ pub struct Market {
     /// The current amount of collateral asset under direct control of the
     /// market.
     collateral_asset_balance: u128,
-    lend_positions: UnorderedMap<AccountId, LendPosition>,
+    supply_positions: UnorderedMap<AccountId, SupplyPosition>,
     borrow_positions: UnorderedMap<AccountId, BorrowPosition>,
-    borrow_asset_deposited_log: TreeMap<u64, u128>,
+    total_borrow_asset_deposited_log: TreeMap<u64, u128>,
     collateral_asset_fee_distribution_log: TreeMap<u64, u128>,
 }
 
@@ -62,9 +62,9 @@ impl Market {
             borrow_asset_deposited: 0,
             borrow_asset_balance: 0,
             collateral_asset_balance: 0,
-            lend_positions: UnorderedMap::new(key!(LendPositions)),
+            supply_positions: UnorderedMap::new(key!(SupplyPositions)),
             borrow_positions: UnorderedMap::new(key!(BorrowPositions)),
-            borrow_asset_deposited_log: TreeMap::new(key!(TotalLoanAssetDepositedLog)),
+            total_borrow_asset_deposited_log: TreeMap::new(key!(TotalBorrowAssetDepositedLog)),
             collateral_asset_fee_distribution_log: TreeMap::new(key!(
                 CollateralAssetFeeDistributionLog
             )),
@@ -75,13 +75,13 @@ impl Market {
         self.borrow_positions.get(account_id)
     }
 
-    pub fn get_lend_position(&self, account_id: &AccountId) -> Option<LendPosition> {
-        self.lend_positions.get(account_id)
+    pub fn get_supply_position(&self, account_id: &AccountId) -> Option<SupplyPosition> {
+        self.supply_positions.get(account_id)
     }
 
     fn log_borrow_asset_deposited(&mut self, amount: u128) {
         let block_height = env::block_height();
-        self.borrow_asset_deposited_log
+        self.total_borrow_asset_deposited_log
             .insert(&block_height, &amount);
     }
 
@@ -96,21 +96,21 @@ impl Market {
             .insert(&block_height, &distributed_in_block);
     }
 
-    pub fn record_lend_position_borrow_asset_deposit(
+    pub fn record_supply_position_borrow_asset_deposit(
         &mut self,
         account_id: &AccountId,
         amount: u128,
     ) {
-        let mut lend_position = self
-            .lend_positions
+        let mut supply_position = self
+            .supply_positions
             .get(account_id)
-            .unwrap_or_else(|| LendPosition::new(env::block_height()));
+            .unwrap_or_else(|| SupplyPosition::new(env::block_height()));
 
-        lend_position
+        supply_position
             .deposit_borrow_asset(amount)
-            .unwrap_or_else(|| env::panic_str("Lend position borrow asset overflow"));
+            .unwrap_or_else(|| env::panic_str("Supply position borrow asset overflow"));
 
-        self.lend_positions.insert(account_id, &lend_position);
+        self.supply_positions.insert(account_id, &supply_position);
 
         self.borrow_asset_deposited = self
             .borrow_asset_deposited
@@ -120,21 +120,21 @@ impl Market {
         self.log_borrow_asset_deposited(self.borrow_asset_deposited);
     }
 
-    pub fn record_lend_position_borrow_asset_withdrawal(
+    pub fn record_supply_position_borrow_asset_withdrawal(
         &mut self,
         account_id: &AccountId,
         amount: u128,
     ) {
-        let mut lend_position = self
-            .lend_positions
+        let mut supply_position = self
+            .supply_positions
             .get(account_id)
-            .unwrap_or_else(|| LendPosition::new(env::block_height()));
+            .unwrap_or_else(|| SupplyPosition::new(env::block_height()));
 
-        lend_position
+        supply_position
             .withdraw_borrow_asset(amount)
-            .unwrap_or_else(|| env::panic_str("Lend position borrow asset underflow"));
+            .unwrap_or_else(|| env::panic_str("Supply position borrow asset underflow"));
 
-        self.lend_positions.insert(account_id, &lend_position);
+        self.supply_positions.insert(account_id, &supply_position);
 
         self.borrow_asset_deposited = self
             .borrow_asset_deposited
@@ -227,25 +227,27 @@ impl Market {
         self.log_collateral_asset_fee_distribution(amount);
     }
 
-    pub fn record_lend_position_collateral_rewards_withdrawal(
+    pub fn record_supply_position_collateral_rewards_withdrawal(
         &mut self,
         account_id: &AccountId,
         amount: u128,
     ) {
-        let mut lend_position = self
-            .lend_positions
+        let mut supply_position = self
+            .supply_positions
             .get(account_id)
-            .unwrap_or_else(|| LendPosition::new(env::block_height()));
+            .unwrap_or_else(|| SupplyPosition::new(env::block_height()));
 
-        lend_position
+        supply_position
             .collateral_asset_rewards
             .withdraw(amount)
-            .unwrap_or_else(|| env::panic_str("Lender fee withdrawal underflow"));
+            .unwrap_or_else(|| {
+                env::panic_str("Supply position collateral asset withdrawal underflow")
+            });
 
-        self.lend_positions.insert(account_id, &lend_position);
+        self.supply_positions.insert(account_id, &supply_position);
     }
 
-    pub fn calculate_lend_position_rewards(
+    pub fn calculate_supply_position_rewards(
         &self,
         reward_distribution_log: &TreeMap<u64, u128>,
         last_updated_block_height: u64,
@@ -275,10 +277,10 @@ impl Market {
             }
 
             let total_loan_asset_deposited_at_distribution = self
-                .borrow_asset_deposited_log
+                .total_borrow_asset_deposited_log
                 .get(
                     &self
-                        .borrow_asset_deposited_log
+                        .total_borrow_asset_deposited_log
                         .floor_key(&block_height)
                         .unwrap(),
                 )
@@ -313,7 +315,7 @@ impl Market {
             collateral_asset_price,
             borrow_asset_price,
             self.configuration
-                .minimum_collateral_ratio_per_loan
+                .minimum_collateral_ratio_per_borrow
                 .upcast(),
         )
     }
@@ -335,7 +337,7 @@ impl Market {
 
         // TODO: Do we actually want to decrease the balance here?
         // We still hold the collateral, it's just not "deposited", and it
-        // should all be distributed to liquidity providers (lenders).
+        // should all be distributed to liquidity providers.
         // Probably this problem will go away once we perform a real
         // liquidation (i.e. sale of collateral assets).
         // self.collateral_asset_balance = self
@@ -363,13 +365,13 @@ impl FungibleTokenReceiver for Market {
         let asset_id = FungibleAsset::Nep141(env::predecessor_account_id());
 
         match msg {
-            Nep141MarketDepositMessage::Lend => {
+            Nep141MarketDepositMessage::Supply => {
                 require!(
                     asset_id == self.configuration.borrow_asset,
-                    "This market does not support lending with this asset",
+                    "This market does not support supplying with this asset",
                 );
 
-                self.record_lend_position_borrow_asset_deposit(&sender_id, amount.0);
+                self.record_supply_position_borrow_asset_deposit(&sender_id, amount.0);
 
                 PromiseOrValue::Value(U128(0))
             }
@@ -434,10 +436,10 @@ impl MarketExternalInterface for Market {
             .collect()
     }
 
-    fn list_lends(&self, offset: Option<U64>, count: Option<U64>) -> Vec<AccountId> {
+    fn list_supplys(&self, offset: Option<U64>, count: Option<U64>) -> Vec<AccountId> {
         let offset = offset.map_or(0, |o| o.0 as usize);
         let count = count.map_or(0, |c| c.0 as usize);
-        self.lend_positions
+        self.supply_positions
             .keys()
             .skip(offset)
             .take(count)
@@ -466,7 +468,7 @@ impl MarketExternalInterface for Market {
             collateral_asset_price,
             borrow_asset_price,
             self.configuration
-                .minimum_collateral_ratio_per_loan
+                .minimum_collateral_ratio_per_borrow
                 .upcast(),
         ) {
             Some(BorrowStatus::Healthy)
@@ -517,7 +519,7 @@ impl MarketExternalInterface for Market {
                 collateral_asset_price,
                 borrow_asset_price,
                 self.configuration
-                    .minimum_collateral_ratio_per_loan
+                    .minimum_collateral_ratio_per_borrow
                     .upcast(),
             ),
             "Cannot borrow beyond MCR",
@@ -530,8 +532,8 @@ impl MarketExternalInterface for Market {
         )
     }
 
-    fn get_lend_position(&self, account_id: AccountId) -> Option<LendPosition> {
-        self.lend_positions.get(&account_id)
+    fn get_supply_position(&self, account_id: AccountId) -> Option<SupplyPosition> {
+        self.supply_positions.get(&account_id)
     }
 
     fn queue_withdrawal(&mut self, amount: U128) {
@@ -550,7 +552,7 @@ impl MarketExternalInterface for Market {
         todo!()
     }
 
-    fn withdraw_lend_position_rewards(&mut self, amount: U128) {
+    fn withdraw_supply_position_rewards(&mut self, amount: U128) {
         todo!()
     }
 

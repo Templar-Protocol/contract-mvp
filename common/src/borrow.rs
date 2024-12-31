@@ -35,12 +35,12 @@ impl BorrowPosition {
             * collateral_asset_price.numerator()
             * borrow_asset_price.denominator()
             * minimum_collateral_ratio.denominator();
-        let scaled_loan_value = self.borrow_asset_liability.0
+        let scaled_borrow_value = self.borrow_asset_liability.0
             * borrow_asset_price.numerator()
             * collateral_asset_price.denominator()
             * minimum_collateral_ratio.numerator();
 
-        scaled_collateral_value >= scaled_loan_value
+        scaled_collateral_value >= scaled_borrow_value
     }
 
     pub fn deposit_collateral_asset(&mut self, amount: u128) -> Option<U128> {

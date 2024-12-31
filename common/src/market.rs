@@ -5,8 +5,8 @@ use crate::{
     asset::FungibleAsset,
     borrow::{BorrowPosition, BorrowStatus},
     fee::{Fee, TimeBasedFee},
-    lend::LendPosition,
     rational::Rational,
+    supply::SupplyPosition,
 };
 
 // #[near_sdk::ext_contract(ext_market)]
@@ -29,13 +29,13 @@ pub trait MarketExternalInterface {
     // balances.
 
     fn list_borrows(&self, offset: Option<U64>, count: Option<U64>) -> Vec<AccountId>;
-    fn list_lends(&self, offset: Option<U64>, count: Option<U64>) -> Vec<AccountId>;
+    fn list_supplys(&self, offset: Option<U64>, count: Option<U64>) -> Vec<AccountId>;
 
     /// This function does need to retrieve a "proof-of-price" from somewhere, e.g. oracle.
     fn liquidate(&mut self, account_id: AccountId, meta: ()) -> ();
 
     // ==================
-    // BORROWER FUNCTIONS
+    // BORROW FUNCTIONS
     // ==================
 
     // Required to implement NEP-141 FT token receiver to receive local fungible tokens.
@@ -67,15 +67,15 @@ pub trait MarketExternalInterface {
     ) -> PromiseOrValue<()>;
 
     // ================
-    // LENDER FUNCTIONS
+    // SUPPLY FUNCTIONS
     // ================
     // We assume that all borrowed assets are NEAR-local. That is to say, we
-    // don't yet support lending of remote assets.
+    // don't yet support supplying of remote assets.
 
     // Required to implement NEP-141 FT token receiver to receive local fungible tokens.
-    // ft_on_receive :: where msg = lend
+    // ft_on_receive :: where msg = supply
 
-    fn get_lend_position(&self, account_id: AccountId) -> Option<LendPosition>;
+    fn get_supply_position(&self, account_id: AccountId) -> Option<SupplyPosition>;
 
     fn queue_withdrawal(&mut self, amount: U128);
     fn cancel_withrawal(&mut self);
@@ -87,7 +87,7 @@ pub trait MarketExternalInterface {
     // =================
     // REWARDS FUNCTIONS
     // =================
-    fn withdraw_lend_position_rewards(&mut self, amount: U128);
+    fn withdraw_supply_position_rewards(&mut self, amount: U128);
     fn withdraw_liquidator_rewards(&mut self, amount: U128);
     fn withdraw_protocol_rewards(&mut self, amount: U128);
     // fn withdraw_insurance_rewards(&mut self, amount: U128);
@@ -201,15 +201,15 @@ pub struct MarketConfiguration {
     pub borrow_asset: FungibleAsset,
     pub collateral_asset: FungibleAsset,
     pub balance_oracle_account_id: AccountId,
-    pub minimum_collateral_ratio_per_loan: Rational<u16>,
+    pub minimum_collateral_ratio_per_borrow: Rational<u16>,
     /// How much of the deposited principal may be lent out (up to 100%)?
-    /// This is a matter of protection for the lenders.
+    /// This is a matter of protection for supply providers.
     /// Set to 99% for starters.
     pub maximum_borrow_asset_usage_ratio: Rational<u16>,
     /// The origination fee is a one-time amount added to the principal of the
-    /// loan. That is to say, the origination fee is denominated in units of
-    /// the loan asset and is paid by the borrower during repayment (or
-    /// liquidation).
+    /// borrow. That is to say, the origination fee is denominated in units of
+    /// the borrow asset and is paid by the borrowing account during repayment
+    /// (or liquidation).
     pub origination_fee: Fee,
     pub annual_maintenance_fee: Fee,
     pub maximum_borrow_duration: Option<U64>,
@@ -222,7 +222,7 @@ pub struct MarketConfiguration {
 #[derive(Clone, Debug)]
 #[near]
 pub struct LiquidationSpread {
-    pub lend_position: U128,
+    pub supply_position: U128,
     pub liquidator: U128,
     pub protocol: U128,
     // pub insurance: U128,
@@ -230,7 +230,7 @@ pub struct LiquidationSpread {
 
 #[near(serializers = [borsh, json])]
 pub enum Nep141MarketDepositMessage {
-    Lend,
+    Supply,
     Collateralize,
     Repay,
 }
