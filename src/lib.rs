@@ -13,7 +13,6 @@ use templar_common::{
         BorrowAssetMetrics, LiquidateMsg, Market, MarketConfiguration, MarketExternalInterface,
         Nep141MarketDepositMessage, OraclePriceProof,
     },
-    rational::Rational,
     supply::SupplyPosition,
 };
 
@@ -241,7 +240,7 @@ impl MarketExternalInterface for Contract {
         todo!()
     }
 
-    fn cancel_withrawal(&mut self) {
+    fn cancel_withdrawal(&mut self) {
         todo!()
     }
 

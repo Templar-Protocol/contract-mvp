@@ -5,7 +5,6 @@ use near_sdk::{
 
 use crate::{
     borrow::{BorrowPosition, BorrowStatus},
-    rational::Rational,
     supply::SupplyPosition,
 };
 
@@ -74,7 +73,7 @@ pub trait MarketExternalInterface {
     fn get_supply_position(&self, account_id: AccountId) -> Option<SupplyPosition>;
 
     fn queue_withdrawal(&mut self, amount: U128);
-    fn cancel_withrawal(&mut self);
+    fn cancel_withdrawal(&mut self);
     /// Auto-harvests yield.
     fn process_next_withdrawal(&mut self);
 
