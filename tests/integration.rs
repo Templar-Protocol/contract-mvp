@@ -1,15 +1,18 @@
-use std::sync::atomic::{AtomicU8, Ordering};
-
-use contract_mvp::ViewVault;
 use near_sdk::{
     json_types::{U128, U64},
-    AccountId, AccountIdRef,
+    serde_json::json,
+    AccountId, AccountIdRef, NearToken,
 };
 use near_workspaces::{
     network::Sandbox, operations::Function, prelude::TopLevelAccountCreator, Account, Contract,
     DevNetwork, Worker,
 };
-use serde_json::json;
+use templar_common::{
+    asset::FungibleAsset,
+    fee::{Fee, TimeBasedFee, TimeBasedFeeFunction},
+    market::{LiquidationSpread, MarketConfiguration},
+    rational::Rational,
+};
 
 // ===== UTIL FUNCTIONS =====
 
@@ -58,53 +61,51 @@ async fn deploy_mock_ft(
     contract
 }
 
-async fn setup() -> (Worker<Sandbox>, Contract) {
-    let sandbox = near_workspaces::sandbox().await.unwrap();
+fn market_configuration(
+    borrow_asset_id: AccountId,
+    collateral_asset_id: AccountId,
+    liquidator_account_id: AccountId,
+) -> MarketConfiguration {
+    MarketConfiguration {
+        borrow_asset: FungibleAsset::Nep141(borrow_asset_id),
+        collateral_asset: FungibleAsset::Nep141(collateral_asset_id),
+        balance_oracle_account_id: "balance_oracle".parse().unwrap(),
+        liquidator_account_id,
+        minimum_collateral_ratio_per_borrow: Rational::new(120, 100),
+        maximum_borrow_asset_usage_ratio: Rational::new(99, 100),
+        origination_fee: Fee::Proportional(Rational::new(1, 100)),
+        annual_maintenance_fee: Fee::Flat(0.into()),
+        maximum_borrow_duration: None,
+        minimum_borrow_amount: 1.into(),
+        maximum_borrow_amount: u128::MAX.into(),
+        withdrawal_fee: TimeBasedFee {
+            fee: Fee::Flat(0.into()),
+            duration: 0.into(),
+            behavior: TimeBasedFeeFunction::Fixed,
+        },
+        liquidation_spread: LiquidationSpread {
+            supply_position: 8.into(),
+            liquidator: 1.into(),
+            protocol: 1.into(),
+        },
+    }
+}
+
+async fn setup_market(worker: &Worker<Sandbox>, configuration: MarketConfiguration) -> Contract {
     let contract_wasm = near_workspaces::compile_project("./").await.unwrap();
 
-    let contract = sandbox.dev_deploy(&contract_wasm).await.unwrap();
+    let contract = worker.dev_deploy(&contract_wasm).await.unwrap();
     contract
         .call("new")
-        .args_json(json!({}))
+        .args_json(json!({
+            "configuration": configuration,
+        }))
         .transact()
         .await
         .unwrap()
         .unwrap();
 
-    (sandbox, contract)
-}
-
-enum ContractWasm {
-    Vault,
-    MockFt,
-}
-
-static V: AtomicU8 = AtomicU8::new(0);
-
-#[test]
-fn order1() {
-    let i = V.fetch_add(1, Ordering::Relaxed);
-    println!("previous: {i}");
-}
-
-#[test]
-fn order2() {
-    let i = V.fetch_add(10, Ordering::Relaxed);
-    println!("previous: {i}");
-}
-
-async fn contract_wasm(which: ContractWasm) -> &'static [u8] {
-    // match which {
-    //     ContractWasm::Vault => {
-    //         static WASM: Mutex<Option<&[u8]>> = Mutex::new(None);
-    //         let lock = WASM.lock().unwrap();
-    //         if lock.
-    //         *WASM.lock().unwrap() = Some(b"8");
-    //     }
-    //     ContractWasm::MockFt => {}
-    // }
-
-    todo!()
+    contract
 }
 
 async fn deploy_ft(
@@ -120,12 +121,16 @@ async fn deploy_ft(
     account
         .batch(account.id())
         .deploy(&wasm)
-        .call(Function::new("new").args_json(json!({
-            "name": name,
-            "symbol": symbol,
-            "owner_id": owner_id,
-            "supply": U128(supply),
-        })))
+        .call(
+            Function::new("new")
+                .args_json(json!({
+                    "name": name,
+                    "symbol": symbol,
+                    "owner_id": owner_id,
+                    "supply": U128(supply),
+                }))
+                .deposit(NearToken::from_near(1)),
+        )
         .transact()
         .await
         .unwrap()
@@ -135,39 +140,60 @@ async fn deploy_ft(
 // ===== TESTS =====
 
 #[tokio::test]
-async fn test_create_vault() {
-    let (worker, contract) = setup().await;
-    accounts!(worker, user, collateral_asset, stablecoin);
+async fn test_create_market() {
+    let worker = near_workspaces::sandbox().await.unwrap();
+    accounts!(
+        worker,
+        owner_user,
+        supply_user,
+        borrow_user,
+        collateral_asset,
+        borrow_asset
+    );
+    let contract = setup_market(
+        &worker,
+        market_configuration(
+            borrow_asset.id().clone(),
+            collateral_asset.id().clone(),
+            owner_user.id().clone(),
+        ),
+    )
+    .await;
+    deploy_ft(
+        &borrow_asset,
+        "Borrow Asset",
+        "BORROW",
+        supply_user.id(),
+        1000,
+    )
+    .await;
+    deploy_ft(
+        &collateral_asset,
+        "Collateral Asset",
+        "COLLATERAL",
+        borrow_user.id(),
+        1000,
+    )
+    .await;
 
-    let result = user
-        .call(contract.id(), "create_vault")
-        .args_json(json!({
-            "loan_asset_id": stablecoin.id(),
-            "collateral_asset_id": collateral_asset.id(),
-            "min_collateral_ratio": [150, 100],
-        }))
-        .transact()
-        .await
-        .unwrap();
-
-    assert!(result.is_success());
-
-    let vault_id = result.json::<U64>().unwrap().0;
-    println!("Created vault with ID: {vault_id}");
-
-    // Verify the vault was created
-    let vault = contract
-        .view("get_vault")
-        .args_json(json!({ "vault_id": U64(vault_id) }))
+    let configuration = contract
+        .view("get_configuration")
+        .args_json(json!({}))
         .await
         .unwrap()
-        .json::<ViewVault>()
+        .json::<MarketConfiguration>()
         .unwrap();
 
     assert_eq!(
-        &vault.collateral_asset_id.into_nep141().unwrap(),
+        &configuration.collateral_asset.into_nep141().unwrap(),
         collateral_asset.id(),
     );
-    assert_eq!(&vault.loan_asset_id.into_nep141().unwrap(), stablecoin.id());
-    assert_eq!(vault.min_collateral_ratio, (150, 100));
+    assert_eq!(
+        &configuration.borrow_asset.into_nep141().unwrap(),
+        borrow_asset.id()
+    );
+    assert_eq!(
+        configuration.minimum_collateral_ratio_per_borrow,
+        Rational::new(120, 100)
+    );
 }

@@ -2,7 +2,7 @@
 /target/
 
 # Ignore Cargo.lock for library projects (optional)
-Cargo.lock
+# Cargo.lock
 
 # Ignore .DS_Store
 .DS_Store

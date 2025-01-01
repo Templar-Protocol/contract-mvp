@@ -1,5 +1,5 @@
 use near_sdk::json_types::U128;
-use near_sdk::{near, AccountId};
+use near_sdk::{near, require, AccountId};
 
 use crate::rational::Rational;
 
@@ -27,7 +27,7 @@ pub struct BorrowAssetMetrics {
 
 impl BorrowAssetMetrics {
     pub fn calculate(deposited: u128, balance: u128, maximum_usage_ratio: Rational<u128>) -> Self {
-        assert!(deposited >= balance);
+        require!(deposited >= balance);
 
         let used = deposited - balance;
 
