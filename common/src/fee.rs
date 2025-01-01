@@ -6,7 +6,7 @@ use near_sdk::{
 use crate::rational::Rational;
 
 #[derive(Clone, Debug)]
-#[near]
+#[near(serializers = [json, borsh])]
 pub enum Fee {
     Flat(U128),
     Proportional(Rational<u16>),
@@ -24,7 +24,7 @@ impl Fee {
 }
 
 #[derive(Clone, Debug)]
-#[near]
+#[near(serializers = [json, borsh])]
 pub struct TimeBasedFee {
     pub fee: Fee,
     pub duration: U64,
@@ -32,7 +32,7 @@ pub struct TimeBasedFee {
 }
 
 #[derive(Clone, Debug)]
-#[near]
+#[near(serializers = [json, borsh])]
 pub enum TimeBasedFeeFunction {
     Fixed,
     Linear,

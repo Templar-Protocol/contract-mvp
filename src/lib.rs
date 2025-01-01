@@ -4,7 +4,7 @@ use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
 use near_sdk::{
     env,
     json_types::{U128, U64},
-    near, require, AccountId, PromiseOrValue,
+    near, require, AccountId, BorshStorageKey, PromiseOrValue,
 };
 use templar_common::{
     asset::FungibleAsset,
@@ -16,9 +16,25 @@ use templar_common::{
     supply::SupplyPosition,
 };
 
+#[derive(BorshStorageKey)]
+#[near(serializers = [borsh])]
+enum StorageKey {
+    Market,
+}
+
 #[near(contract_state)]
 pub struct Contract {
     pub market: Market,
+}
+
+#[near]
+impl Contract {
+    #[init]
+    pub fn new(configuration: MarketConfiguration) -> Self {
+        Self {
+            market: Market::new(StorageKey::Market, configuration),
+        }
+    }
 }
 
 impl Deref for Contract {
