@@ -17,7 +17,7 @@ pub use r#impl::*;
 /// used = deposited - balance
 /// ```
 #[derive(Clone, Debug)]
-#[near]
+#[near(serializers = [borsh, json])]
 pub struct BorrowAssetMetrics {
     pub used: U128,
     /// Available to be borrowed right now.

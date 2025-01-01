@@ -3,7 +3,7 @@ use near_sdk::{
     near,
 };
 
-#[near]
+#[near(serializers = [json, borsh])]
 pub struct SupplyPosition {
     pub borrow_asset_deposited: U128,
     pub borrow_asset_rewards: RewardRecord,
@@ -36,7 +36,7 @@ impl SupplyPosition {
     }
 }
 
-#[near]
+#[near(serializers = [json, borsh])]
 pub struct RewardRecord {
     pub amount: U128,
     pub last_updated_block_height: U64,

@@ -1,14 +1,14 @@
 use near_sdk::{json_types::U128, near};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[near]
+#[near(serializers = [borsh, json])]
 pub enum BorrowStatus {
     Healthy,
     Liquidation,
 }
 
 #[derive(Default)]
-#[near]
+#[near(serializers = [borsh, json])]
 pub struct BorrowPosition {
     pub collateral_asset_deposit: U128,
     pub borrow_asset_liability: U128,

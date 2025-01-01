@@ -61,10 +61,6 @@ impl MarketConfiguration {
 
 #[cfg(test)]
 mod tests {
-    use std::u128;
-
-    use near_sdk::json_types::U128;
-
     use crate::{
         asset::FungibleAsset,
         fee::{Fee, TimeBasedFee, TimeBasedFeeFunction},
@@ -72,12 +68,14 @@ mod tests {
         rational::Rational,
     };
 
-    #[test]
+    // {"configuration":{"borrow_asset":{"Nep141":"usdt.fakes.testnet"},"collateral_asset":{"Nep141":"wrap.testnet"},"balance_oracle_account_id":"root.testnet","liquidator_account_id":"templar-in-training.testnet","minimum_collateral_ratio_per_borrow":[6,5],"maximum_borrow_asset_usage_ratio":[99,100],"origination_fee":{"Proportional":[1,100]},"annual_maintenance_fee":{"Flat":"0"},"maximum_borrow_duration":null,"minimum_borrow_amount":"1","maximum_borrow_amount":"340282366920938463463374607431768211455","withdrawal_fee":{"fee":{"Flat":"0"},"duration":"0","behavior":"Fixed"},"liquidation_spread":{"supply_position":"6","liquidator":"1","protocol":"1"}}}
+
     // #[ignore = "generate sample configuration"]
+    #[test]
     pub fn generate_sample_configuration() {
         println!(
-            "{}",
-            near_sdk::serde_json::to_string_pretty(&MarketConfiguration {
+            "{{\"configuration\":{}}}",
+            near_sdk::serde_json::to_string(&MarketConfiguration {
                 borrow_asset: FungibleAsset::Nep141("usdt.fakes.testnet".parse().unwrap()),
                 collateral_asset: FungibleAsset::Nep141("wrap.testnet".parse().unwrap()),
                 balance_oracle_account_id: "root.testnet".parse().unwrap(),
