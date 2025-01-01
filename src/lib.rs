@@ -237,11 +237,15 @@ impl MarketExternalInterface for Contract {
     }
 
     fn queue_withdrawal(&mut self, amount: U128) {
-        todo!()
+        // TODO: Check that amount is a sane value? i.e. within the amount actually deposited?
+        let predecessor = env::predecessor_account_id();
+        self.withdrawal_queue.remove(&predecessor);
+        self.withdrawal_queue
+            .insert_or_update(&predecessor, amount.0);
     }
 
     fn cancel_withdrawal(&mut self) {
-        todo!()
+        self.withdrawal_queue.remove(&env::predecessor_account_id());
     }
 
     fn process_next_withdrawal(&mut self) {

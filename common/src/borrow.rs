@@ -1,7 +1,5 @@
 use near_sdk::{json_types::U128, near};
 
-use crate::rational::Rational;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near]
 pub enum BorrowStatus {

@@ -3,7 +3,10 @@ use near_sdk::{
     env, near, AccountId, BorshStorageKey, IntoStorageKey,
 };
 
-use crate::{borrow::BorrowPosition, market::MarketConfiguration, supply::SupplyPosition};
+use crate::{
+    borrow::BorrowPosition, market::MarketConfiguration, supply::SupplyPosition,
+    withdrawal_queue::WithdrawalQueue,
+};
 
 use super::OraclePriceProof;
 
@@ -14,6 +17,7 @@ enum StorageKey {
     BorrowPositions,
     TotalBorrowAssetDepositedLog,
     BorrowAssetRewardDistributionLog,
+    WithdrawalQueue,
 }
 
 #[near]
@@ -33,6 +37,7 @@ pub struct Market {
     pub borrow_positions: UnorderedMap<AccountId, BorrowPosition>,
     pub total_borrow_asset_deposited_log: TreeMap<u64, u128>,
     pub borrow_asset_reward_distribution_log: TreeMap<u64, u128>,
+    pub withdrawal_queue: WithdrawalQueue,
 }
 
 impl Market {
@@ -59,6 +64,7 @@ impl Market {
             borrow_asset_reward_distribution_log: TreeMap::new(key!(
                 BorrowAssetRewardDistributionLog
             )),
+            withdrawal_queue: WithdrawalQueue::new(key!(WithdrawalQueue)),
         }
     }
 
