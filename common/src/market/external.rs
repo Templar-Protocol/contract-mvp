@@ -9,7 +9,7 @@ use crate::{
     supply::SupplyPosition,
 };
 
-use super::{BorrowAssetMetrics, MarketConfiguration};
+use super::{BorrowAssetMetrics, MarketConfiguration, OraclePriceProof};
 
 // #[near_sdk::ext_contract(ext_market)]
 pub trait MarketExternalInterface {
@@ -34,7 +34,7 @@ pub trait MarketExternalInterface {
     fn list_supplys(&self, offset: Option<U64>, count: Option<U64>) -> Vec<AccountId>;
 
     /// This function does need to retrieve a "proof-of-price" from somewhere, e.g. oracle.
-    fn liquidate(&mut self, account_id: AccountId, meta: ()) -> ();
+    // fn liquidate(&mut self, account_id: AccountId, meta: ()) -> ();
 
     // ==================
     // BORROW FUNCTIONS
@@ -50,8 +50,7 @@ pub trait MarketExternalInterface {
     fn get_borrow_status(
         &self,
         account_id: AccountId,
-        collateral_asset_price: Rational<u128>,
-        borrow_asset_price: Rational<u128>,
+        oracle_price_proof: OraclePriceProof,
     ) -> Option<BorrowStatus>;
     /// Works for both registered and unregistered accounts.
     fn get_collateral_asset_deposit_address_for(
@@ -61,12 +60,7 @@ pub trait MarketExternalInterface {
     ) -> String;
 
     fn initialize_borrow(&mut self, borrow_asset_amount: U128, collateral_asset_amount: U128);
-    fn borrow(
-        &mut self,
-        amount: U128,
-        collateral_asset_price: Rational<u128>,
-        borrow_asset_price: Rational<u128>,
-    ) -> PromiseOrValue<()>;
+    fn borrow(&mut self, amount: U128, oracle_price_proof: OraclePriceProof) -> PromiseOrValue<()>;
 
     // ================
     // SUPPLY FUNCTIONS

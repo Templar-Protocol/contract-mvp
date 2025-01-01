@@ -10,8 +10,8 @@ use templar_common::{
     asset::FungibleAsset,
     borrow::{BorrowPosition, BorrowStatus},
     market::{
-        BorrowAssetMetrics, Market, MarketConfiguration, MarketExternalInterface,
-        Nep141MarketDepositMessage,
+        BorrowAssetMetrics, LiquidateMsg, Market, MarketConfiguration, MarketExternalInterface,
+        Nep141MarketDepositMessage, OraclePriceProof,
     },
     rational::Rational,
     supply::SupplyPosition,
@@ -85,7 +85,40 @@ impl FungibleTokenReceiver for Contract {
 
                 PromiseOrValue::Value(U128(0))
             }
-            Nep141MarketDepositMessage::Liquidate => todo!(),
+            Nep141MarketDepositMessage::Liquidate(LiquidateMsg {
+                account_id,
+                oracle_price_proof,
+            }) => {
+                require!(
+                    asset_id == self.configuration.borrow_asset,
+                    "This market does not support liquidation with this asset",
+                );
+                require!(
+                    sender_id == self.configuration.liquidator_account_id,
+                    "Account not authorized to perform liquidations",
+                );
+
+                let borrow_position = self
+                    .market
+                    .get_borrow_position(&account_id)
+                    .unwrap_or_default();
+
+                require!(
+                    !self
+                        .configuration
+                        .is_healthy(&borrow_position, oracle_price_proof),
+                    "Borrow position cannot be liquidated at this price",
+                );
+
+                // TODO: Do we need to check the value of the amount recovered?
+                // We have the price data available in `oracle_price_proof`...
+                self.record_full_liquidation(&account_id, amount.0);
+
+                // TODO: (cont'd from above) This would allow us to calculate
+                // the amount that "should" be recovered and refund the
+                // liquidator any excess.
+                PromiseOrValue::Value(U128(0))
+            }
         }
     }
 }
@@ -132,10 +165,6 @@ impl MarketExternalInterface for Contract {
             .collect()
     }
 
-    fn liquidate(&mut self, account_id: AccountId, meta: ()) -> () {
-        todo!()
-    }
-
     fn get_borrow_position(&self, account_id: AccountId) -> Option<BorrowPosition> {
         self.borrow_positions.get(&account_id)
     }
@@ -143,20 +172,16 @@ impl MarketExternalInterface for Contract {
     fn get_borrow_status(
         &self,
         account_id: AccountId,
-        collateral_asset_price: Rational<u128>,
-        borrow_asset_price: Rational<u128>,
+        oracle_price_proof: OraclePriceProof,
     ) -> Option<BorrowStatus> {
-        let Some(position) = self.borrow_positions.get(&account_id) else {
+        let Some(borrow_position) = self.borrow_positions.get(&account_id) else {
             return None;
         };
 
-        if position.is_healthy(
-            collateral_asset_price,
-            borrow_asset_price,
-            self.configuration
-                .minimum_collateral_ratio_per_borrow
-                .upcast(),
-        ) {
+        if self
+            .configuration
+            .is_healthy(&borrow_position, oracle_price_proof)
+        {
             Some(BorrowStatus::Healthy)
         } else {
             Some(BorrowStatus::Liquidation)
@@ -175,12 +200,7 @@ impl MarketExternalInterface for Contract {
         todo!()
     }
 
-    fn borrow(
-        &mut self,
-        amount: U128,
-        collateral_asset_price: Rational<u128>,
-        borrow_asset_price: Rational<u128>,
-    ) -> PromiseOrValue<()> {
+    fn borrow(&mut self, amount: U128, oracle_price_proof: OraclePriceProof) -> PromiseOrValue<()> {
         require!(amount.0 > 0, "Borrow amount must be greater than zero");
 
         let account_id = env::predecessor_account_id();
@@ -201,13 +221,8 @@ impl MarketExternalInterface for Contract {
         );
 
         require!(
-            borrow_position.is_healthy(
-                collateral_asset_price,
-                borrow_asset_price,
-                self.configuration
-                    .minimum_collateral_ratio_per_borrow
-                    .upcast(),
-            ),
+            self.configuration
+                .is_healthy(&borrow_position, oracle_price_proof),
             "Cannot borrow beyond MCR",
         );
 

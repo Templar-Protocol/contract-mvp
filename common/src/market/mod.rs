@@ -1,5 +1,5 @@
 use near_sdk::json_types::U128;
-use near_sdk::near;
+use near_sdk::{near, AccountId};
 
 use crate::rational::Rational;
 
@@ -121,10 +121,25 @@ pub struct LiquidationSpread {
     // pub insurance: U128,
 }
 
-#[near(serializers = [borsh, json])]
+#[near(serializers = [json])]
 pub enum Nep141MarketDepositMessage {
     Supply,
     Collateralize,
     Repay,
-    Liquidate,
+    Liquidate(LiquidateMsg),
+}
+
+#[near(serializers = [json])]
+pub struct LiquidateMsg {
+    pub account_id: AccountId,
+    pub oracle_price_proof: OraclePriceProof,
+}
+
+/// This represents some sort of proof-of-price from a price oracle, e.g. Pyth.
+/// In production, it must be validated, but for now it's just trust me bro.
+#[derive(Clone, Copy, Debug)]
+#[near(serializers = [json])]
+pub struct OraclePriceProof {
+    pub collateral_asset_price: Rational<u128>,
+    pub borrow_asset_price: Rational<u128>,
 }

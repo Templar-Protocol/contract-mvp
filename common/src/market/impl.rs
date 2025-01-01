@@ -1,11 +1,11 @@
 use near_sdk::{
     collections::{TreeMap, UnorderedMap},
-    env, near, require, AccountId, BorshStorageKey, IntoStorageKey,
+    env, near, AccountId, BorshStorageKey, IntoStorageKey,
 };
 
-use crate::{
-    borrow::BorrowPosition, market::MarketConfiguration, rational::Rational, supply::SupplyPosition,
-};
+use crate::{borrow::BorrowPosition, market::MarketConfiguration, supply::SupplyPosition};
+
+use super::OraclePriceProof;
 
 #[derive(BorshStorageKey)]
 #[near]
@@ -291,20 +291,15 @@ impl Market {
     pub fn can_borrow_position_be_liquidated(
         &self,
         account_id: &AccountId,
-        collateral_asset_price: Rational<u128>,
-        borrow_asset_price: Rational<u128>,
+        oracle_price_proof: OraclePriceProof,
     ) -> bool {
         let Some(borrow_position) = self.borrow_positions.get(account_id) else {
             return false;
         };
 
-        !borrow_position.is_healthy(
-            collateral_asset_price,
-            borrow_asset_price,
-            self.configuration
-                .minimum_collateral_ratio_per_borrow
-                .upcast(),
-        )
+        !self
+            .configuration
+            .is_healthy(&borrow_position, oracle_price_proof)
     }
 
     pub fn record_full_liquidation(
@@ -314,7 +309,12 @@ impl Market {
     ) {
         let mut borrow_position = self.borrow_positions.get(account_id).unwrap_or_default();
 
-        borrow_position.zero_out_collateral_asset_deposit();
+        let collateral_asset_amount_liquidated =
+            borrow_position.zero_out_collateral_asset_deposit();
+
+        // TODO: bounds checks
+        self.collateral_asset_balance -= collateral_asset_amount_liquidated;
+        self.borrow_asset_balance += recovered_borrow_asset_amount;
 
         if let Some(margin) =
             recovered_borrow_asset_amount.checked_sub(borrow_position.borrow_asset_liability.0)
@@ -323,26 +323,12 @@ impl Market {
             self.record_borrow_asset_reward_distribution(margin);
         } else {
             // we took a loss
+            // TODO: some sort of recovery for suppliers
             borrow_position
                 .decrease_borrow_asset_liability(recovered_borrow_asset_amount)
                 .unwrap();
         }
-        // TODO: Update totals.
 
         self.borrow_positions.insert(account_id, &borrow_position);
-
-        // TODO: Do we actually want to decrease the balance here?
-        // We still hold the collateral, it's just not "deposited", and it
-        // should all be distributed to liquidity providers.
-        // Probably this problem will go away once we perform a real
-        // liquidation (i.e. sale of collateral assets).
-        // self.collateral_asset_balance = self
-        //     .collateral_asset_balance
-        //     .checked_sub(liquidated_collateral)
-        //     .unwrap_or_else(|| env::panic_str("Total collateral deposited underflow"));
-        // self.borrow_asset_balance = self
-        //     .borrow_asset_balance
-        //     .checked_sub(liquidated_loan)
-        //     .unwrap_or_else(|| env::panic_str("Total loan asset borrowed underflow"));
     }
 }

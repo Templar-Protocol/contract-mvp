@@ -8,7 +8,7 @@ use near_sdk::near;
 /// NOTE: It may be prudent to have two different "ratio" types: one for any
 /// positive rational, and one restricted to values [0, 1].
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[near]
+#[near(serializers = [borsh, json])]
 pub struct Rational<T>(T, T);
 
 #[allow(clippy::eq_op)]

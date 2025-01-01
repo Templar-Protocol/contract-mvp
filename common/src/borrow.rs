@@ -25,24 +25,6 @@ impl BorrowPosition {
         self.collateral_asset_deposit.0 != 0 || self.borrow_asset_liability.0 != 0
     }
 
-    pub fn is_healthy(
-        &self,
-        collateral_asset_price: Rational<u128>,
-        borrow_asset_price: Rational<u128>,
-        minimum_collateral_ratio: Rational<u128>,
-    ) -> bool {
-        let scaled_collateral_value = self.collateral_asset_deposit.0
-            * collateral_asset_price.numerator()
-            * borrow_asset_price.denominator()
-            * minimum_collateral_ratio.denominator();
-        let scaled_borrow_value = self.borrow_asset_liability.0
-            * borrow_asset_price.numerator()
-            * collateral_asset_price.denominator()
-            * minimum_collateral_ratio.numerator();
-
-        scaled_collateral_value >= scaled_borrow_value
-    }
-
     pub fn zero_out_collateral_asset_deposit(&mut self) -> u128 {
         let value = self.collateral_asset_deposit.0;
         self.collateral_asset_deposit.0 = 0;
