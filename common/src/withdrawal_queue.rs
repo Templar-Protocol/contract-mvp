@@ -16,6 +16,7 @@ pub struct QueueNode {
 pub struct WithdrawalQueue {
     prefix: Vec<u8>,
     length: u32,
+    is_locked: bool,
     next_queue_node_id: NonZeroU32,
     queue: LookupMap<NonZeroU32, QueueNode>,
     queue_head: Option<NonZeroU32>,
@@ -41,6 +42,7 @@ impl WithdrawalQueue {
         Self {
             prefix: prefix.clone(),
             length: 0,
+            is_locked: false,
             next_queue_node_id: NonZeroU32::MIN,
             queue: LookupMap::new(key!(Queue)),
             queue_head: None,
@@ -69,6 +71,10 @@ impl WithdrawalQueue {
         node_id: NonZeroU32,
         f: impl FnOnce(&mut QueueNode) -> T,
     ) -> T {
+        if self.is_locked && Some(node_id) == self.queue_head {
+            env::panic_str("Cannot mutate withdrawal queue head while queue is locked.");
+        }
+
         let mut node = self
             .queue
             .get(&node_id)
@@ -92,7 +98,35 @@ impl WithdrawalQueue {
         }
     }
 
-    pub fn pop(&mut self) -> Option<(AccountId, u128)> {
+    pub fn try_lock(&mut self) -> Option<(AccountId, u128)> {
+        if self.is_locked {
+            return None;
+        }
+
+        if let Some(peek) = self.peek() {
+            self.is_locked = true;
+            Some(peek)
+        } else {
+            None
+        }
+    }
+
+    pub fn unlock(&mut self) {
+        self.is_locked = false;
+    }
+
+    /// Only pops if:
+    /// 1. Queue is non-empty.
+    /// 2. Queue is locked.
+    ///
+    /// Unlocks the queue.
+    pub fn try_pop(&mut self) -> Option<(AccountId, u128)> {
+        if !self.is_locked {
+            env::panic_str("Withdrawal queue is locked.");
+        }
+
+        self.is_locked = false;
+
         if let Some(node_id) = self.queue_head {
             let QueueNode {
                 account_id,
@@ -117,7 +151,13 @@ impl WithdrawalQueue {
         }
     }
 
+    /// If the queue is locked, accounts can only be removed if they are not
+    /// at the head of the queue.
     pub fn remove(&mut self, account_id: &AccountId) -> Option<u128> {
+        if self.is_locked && self.queue_head == self.entries.get(account_id) {
+            env::panic_str("Withdrawal queue is locked.");
+        }
+
         if let Some(node_id) = self.entries.remove(account_id) {
             let node = self
                 .queue
@@ -205,6 +245,8 @@ mod tests {
 
     use super::WithdrawalQueue;
 
+    // TODO: Test locking.
+
     #[test]
     fn withdrawal_remove() {
         let mut wq = WithdrawalQueue::new(b"w");
@@ -243,13 +285,13 @@ mod tests {
         assert_eq!(wq.peek(), Some((alice.clone(), 99)));
         wq.insert_or_update(&bob, 123);
         assert_eq!(wq.len(), 2);
-        assert_eq!(wq.pop(), Some((alice.clone(), 99)));
+        assert_eq!(wq.try_pop(), Some((alice.clone(), 99)));
         assert_eq!(wq.len(), 1);
         wq.insert_or_update(&charlie, 42);
         assert_eq!(wq.len(), 2);
-        assert_eq!(wq.pop(), Some((bob.clone(), 123)));
+        assert_eq!(wq.try_pop(), Some((bob.clone(), 123)));
         assert_eq!(wq.len(), 1);
-        assert_eq!(wq.pop(), Some((charlie.clone(), 42)));
+        assert_eq!(wq.try_pop(), Some((charlie.clone(), 42)));
         assert_eq!(wq.len(), 0);
     }
 }

@@ -4,8 +4,8 @@ use near_sdk::{
 };
 
 use crate::{
-    borrow::BorrowPosition, market::MarketConfiguration, supply::SupplyPosition,
-    withdrawal_queue::WithdrawalQueue,
+    asset::FungibleAssetAmount, borrow::BorrowPosition, market::MarketConfiguration,
+    supply::SupplyPosition, withdrawal_queue::WithdrawalQueue,
 };
 
 use super::OraclePriceProof;

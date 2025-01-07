@@ -143,3 +143,18 @@ pub struct OraclePriceProof {
     pub collateral_asset_price: Rational<u128>,
     pub borrow_asset_price: Rational<u128>,
 }
+
+#[derive(Clone, Debug)]
+#[near(serializers = [json])]
+pub struct WithdrawalRequestStatus {
+    pub index: u32,
+    pub depth: U128,
+    pub amount: U128,
+}
+
+#[derive(Clone, Debug)]
+#[near(serializers = [json])]
+pub struct WithdrawalQueueStatus {
+    pub depth: U128,
+    pub length: u32,
+}

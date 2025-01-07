@@ -4,16 +4,19 @@ use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
 use near_sdk::{
     env,
     json_types::{U128, U64},
-    near, require, AccountId, BorshStorageKey, PanicOnDefault, PromiseOrValue,
+    near, require, AccountId, BorshStorageKey, PanicOnDefault, Promise, PromiseError,
+    PromiseOrValue,
 };
 use templar_common::{
     asset::FungibleAsset,
     borrow::{BorrowPosition, BorrowStatus},
     market::{
         BorrowAssetMetrics, LiquidateMsg, Market, MarketConfiguration, MarketExternalInterface,
-        Nep141MarketDepositMessage, OraclePriceProof,
+        Nep141MarketDepositMessage, OraclePriceProof, WithdrawalQueueStatus,
+        WithdrawalRequestStatus,
     },
     supply::SupplyPosition,
+    withdrawal_queue::WithdrawalQueue,
 };
 
 #[derive(BorshStorageKey)]
@@ -253,9 +256,18 @@ impl MarketExternalInterface for Contract {
         self.supply_positions.get(&account_id)
     }
 
-    fn queue_withdrawal(&mut self, amount: U128) {
-        // TODO: Check that amount is a sane value? i.e. within the amount actually deposited?
+    /// If the predecessor has already entered the queue, calling this function
+    /// will reset the position to the back of the queue.
+    fn create_withdrawal_request(&mut self, amount: U128) {
+        require!(amount.0 > 0, "Amount to withdraw must be greater than zero");
         let predecessor = env::predecessor_account_id();
+        if let None = self.supply_positions.get(&predecessor) {
+            env::panic_str("Predecessor does not have a supply position");
+        }
+
+        // TODO: Check that amount is a sane value? i.e. within the amount actually deposited?
+        // Probably not, since this should be checked during the actual execution of the withdrawal.
+        // No sense duplicating the check, probably.
         self.withdrawal_queue.remove(&predecessor);
         self.withdrawal_queue
             .insert_or_update(&predecessor, amount.0);
@@ -265,8 +277,96 @@ impl MarketExternalInterface for Contract {
         self.withdrawal_queue.remove(&env::predecessor_account_id());
     }
 
-    fn process_next_withdrawal(&mut self) {
-        todo!()
+    fn execute_next_withdrawal(&mut self) -> PromiseOrValue<()> {
+        let Some((account_id, requested_amount)) = self.withdrawal_queue.try_lock() else {
+            env::panic_str("Could not lock withdrawal queue. The queue may be empty or a withdrawal may be in-flight.")
+        };
+
+        #[inline]
+        fn skip(this: &mut Contract, msg: &str) -> PromiseOrValue<()> {
+            env::log_str(msg);
+            this.withdrawal_queue
+                .try_pop()
+                .unwrap_or_else(|| env::panic_str("Inconsistent state")); // we just locked the queue
+            return PromiseOrValue::Value(());
+        }
+
+        let Some(mut supply_position) = self.supply_positions.get(&account_id) else {
+            // Supply position no longer exists for some reason, who cares.
+            return skip(self, "Supply position no longer exists: skipping.");
+        };
+
+        // TODO: Check position has enough.
+        let amount = supply_position
+            .borrow_asset_deposited
+            .0
+            .min(requested_amount);
+
+        if amount == 0 {
+            return skip(self, "Refusing to withdraw 0: skipping.");
+        }
+
+        supply_position
+            .withdraw_borrow_asset(amount)
+            .unwrap_or_else(|| env::panic_str("Inconsistent state"));
+        self.supply_positions.insert(&account_id, &supply_position);
+
+        // TODO: Should there be a better heuristic for "can send out
+        // withdrawal" than just checking that we have enough funds?
+        require!(
+            self.borrow_asset_balance >= amount,
+            "This market cannot currently fulfill this withdrawal request. Please try again later.",
+        );
+
+        self.record_supply_position_borrow_asset_withdrawal(&account_id, amount);
+        // TODO: Decide how this value will be regulated.
+        // If we have a balance oracle, will we need to update this value here
+        // still? (Probably, just to be safe!)
+        // TODO: Might be best to actually remove internal asset balance accounting.
+        // TODO: Overflow check.
+        self.borrow_asset_balance -= amount;
+
+        PromiseOrValue::Promise(
+            self.configuration
+                .borrow_asset
+                .transfer(account_id.clone(), amount)
+                .then(
+                    Self::ext(env::current_account_id())
+                        .after_execute_next_withdrawal(account_id, amount),
+                ),
+        )
+    }
+
+    fn get_withdrawal_request_status(
+        &self,
+        account_id: AccountId,
+    ) -> Option<WithdrawalRequestStatus> {
+        if !self.withdrawal_queue.contains(&account_id) {
+            return None;
+        }
+
+        let mut depth = 0;
+        for (index, (current_account, amount)) in self.withdrawal_queue.iter().enumerate() {
+            if current_account == account_id {
+                return Some(WithdrawalRequestStatus {
+                    index: index as u32,
+                    depth: depth.into(),
+                    amount: amount.into(),
+                });
+            } else {
+                depth += amount;
+            }
+        }
+
+        unreachable!()
+    }
+
+    fn get_withdrawal_queue_status(&self) -> WithdrawalQueueStatus {
+        let depth = U128(self.withdrawal_queue.iter().map(|(_, amount)| amount).sum());
+        WithdrawalQueueStatus {
+            depth,
+            length: self.withdrawal_queue.len(),
+        }
     }
 
     fn harvest_yield(&mut self) {
@@ -283,5 +383,49 @@ impl MarketExternalInterface for Contract {
 
     fn withdraw_protocol_rewards(&mut self, amount: U128) {
         todo!()
+    }
+}
+
+#[near]
+impl Contract {
+    #[private]
+    pub fn after_execute_next_withdrawal(
+        &mut self,
+        account: AccountId,
+        amount: u128,
+        #[callback_result] result: Result<Vec<u8>, PromiseError>,
+    ) {
+        match result {
+            Ok(_) => {
+                // Withdrawal succeeded: remove the withdrawal request from the queue.
+
+                // TODO: If this panics, this is BIG BAD, as it means there is
+                // some way to unlock the queue while a withdrawal is in-flight.
+                // So, maybe we should not *actually* panic here, but do some sort of recovery?
+                let (popped_account, _) = self.withdrawal_queue.try_pop().unwrap_or_else(|| {
+                    env::panic_str("Invariant violation: Withdrawal queue should have been locked.")
+                });
+
+                // This is another consistency check: that the account at the
+                // head of the queue cannot change while transfers are
+                // in-flight. This should be maintained by the queue itself.
+                require!(
+                    popped_account == account,
+                    "Invariant violation: Queue shifted while locked/in-flight.",
+                );
+            }
+            Err(_) => {
+                // Withdrawal failed: unlock the queue so they can try again.
+
+                // This is also kind of bad (maybe race condition and we ran
+                // out of funds?), but at least it doesn't necessarily mean
+                // that the contract is totally broken.
+                self.withdrawal_queue.unlock();
+                if let Some(mut supply_position) = self.supply_positions.get(&account) {
+                    supply_position.deposit_borrow_asset(amount);
+                    self.supply_positions.insert(&account, &supply_position);
+                }
+            }
+        }
     }
 }

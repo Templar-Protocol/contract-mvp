@@ -1,6 +1,6 @@
 use near_sdk::{
     json_types::{U128, U64},
-    AccountId, PromiseOrValue,
+    AccountId, Promise, PromiseOrValue,
 };
 
 use crate::{
@@ -8,7 +8,10 @@ use crate::{
     supply::SupplyPosition,
 };
 
-use super::{BorrowAssetMetrics, MarketConfiguration, OraclePriceProof};
+use super::{
+    BorrowAssetMetrics, MarketConfiguration, OraclePriceProof, WithdrawalQueueStatus,
+    WithdrawalRequestStatus,
+};
 
 // #[near_sdk::ext_contract(ext_market)]
 pub trait MarketExternalInterface {
@@ -72,10 +75,15 @@ pub trait MarketExternalInterface {
 
     fn get_supply_position(&self, account_id: AccountId) -> Option<SupplyPosition>;
 
-    fn queue_withdrawal(&mut self, amount: U128);
+    fn create_withdrawal_request(&mut self, amount: U128);
     fn cancel_withdrawal(&mut self);
     /// Auto-harvests yield.
-    fn process_next_withdrawal(&mut self);
+    fn execute_next_withdrawal(&mut self) -> PromiseOrValue<()>;
+    fn get_withdrawal_request_status(
+        &self,
+        account_id: AccountId,
+    ) -> Option<WithdrawalRequestStatus>;
+    fn get_withdrawal_queue_status(&self) -> WithdrawalQueueStatus;
 
     fn harvest_yield(&mut self);
 
