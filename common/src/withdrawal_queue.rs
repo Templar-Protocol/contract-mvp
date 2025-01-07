@@ -1,6 +1,8 @@
 use std::num::NonZeroU32;
 
-use near_sdk::{collections::LookupMap, env, near, AccountId, BorshStorageKey, IntoStorageKey};
+use near_sdk::{
+    collections::LookupMap, env, json_types::U128, near, AccountId, BorshStorageKey, IntoStorageKey,
+};
 
 #[derive(Debug)]
 #[near(serializers = [borsh])]
@@ -51,6 +53,7 @@ impl WithdrawalQueue {
         }
     }
 
+    #[inline]
     pub fn len(&self) -> u32 {
         self.length
     }
@@ -155,7 +158,7 @@ impl WithdrawalQueue {
     /// at the head of the queue.
     pub fn remove(&mut self, account_id: &AccountId) -> Option<u128> {
         if self.is_locked && self.queue_head == self.entries.get(account_id) {
-            env::panic_str("Withdrawal queue is locked.");
+            env::panic_str("Cannot remove head while withdrawal queue is locked.");
         }
 
         if let Some(node_id) = self.entries.remove(account_id) {
@@ -217,6 +220,35 @@ impl WithdrawalQueue {
             next_node_id: self.queue_head,
         }
     }
+
+    pub fn get_status(&self) -> WithdrawalQueueStatus {
+        let depth = U128(self.iter().map(|(_, amount)| amount).sum());
+        WithdrawalQueueStatus {
+            depth,
+            length: self.len(),
+        }
+    }
+
+    pub fn get_request_status(&self, account_id: AccountId) -> Option<WithdrawalRequestStatus> {
+        if !self.contains(&account_id) {
+            return None;
+        }
+
+        let mut depth = 0;
+        for (index, (current_account, amount)) in self.iter().enumerate() {
+            if current_account == account_id {
+                return Some(WithdrawalRequestStatus {
+                    index: index as u32,
+                    depth: depth.into(),
+                    amount: amount.into(),
+                });
+            } else {
+                depth += amount;
+            }
+        }
+
+        unreachable!()
+    }
 }
 
 pub struct WithdrawalQueueIter<'a> {
@@ -237,6 +269,21 @@ impl<'a> Iterator for WithdrawalQueueIter<'a> {
         self.next_node_id = r.next;
         Some((r.account_id, r.amount))
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[near(serializers = [json])]
+pub struct WithdrawalRequestStatus {
+    pub index: u32,
+    pub depth: U128,
+    pub amount: U128,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[near(serializers = [json])]
+pub struct WithdrawalQueueStatus {
+    pub depth: U128,
+    pub length: u32,
 }
 
 #[cfg(test)]

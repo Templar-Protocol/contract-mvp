@@ -1,17 +1,15 @@
 use near_sdk::{
     json_types::{U128, U64},
-    AccountId, Promise, PromiseOrValue,
+    AccountId, PromiseOrValue,
 };
 
 use crate::{
     borrow::{BorrowPosition, BorrowStatus},
     supply::SupplyPosition,
+    withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
 };
 
-use super::{
-    BorrowAssetMetrics, MarketConfiguration, OraclePriceProof, WithdrawalQueueStatus,
-    WithdrawalRequestStatus,
-};
+use super::{BorrowAssetMetrics, MarketConfiguration, OraclePriceProof};
 
 // #[near_sdk::ext_contract(ext_market)]
 pub trait MarketExternalInterface {
@@ -20,8 +18,10 @@ pub trait MarketExternalInterface {
     // ========================
 
     fn get_configuration(&self) -> MarketConfiguration;
-    fn get_borrow_asset_metrics(&self) -> BorrowAssetMetrics;
-    fn get_collateral_asset_balance(&self) -> U128;
+    /// Takes current balance as an argument so that it can be called as view.
+    /// `borrow_asset_balance` should be retrieved from the borrow asset
+    /// contract specified in the market configuration.
+    fn get_borrow_asset_metrics(&self, borrow_asset_balance: U128) -> BorrowAssetMetrics;
 
     // TODO: Decide how to work with remote balances:
 

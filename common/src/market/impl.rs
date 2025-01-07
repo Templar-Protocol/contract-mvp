@@ -4,8 +4,8 @@ use near_sdk::{
 };
 
 use crate::{
-    asset::FungibleAssetAmount, borrow::BorrowPosition, market::MarketConfiguration,
-    supply::SupplyPosition, withdrawal_queue::WithdrawalQueue,
+    borrow::BorrowPosition, market::MarketConfiguration, supply::SupplyPosition,
+    withdrawal_queue::WithdrawalQueue,
 };
 
 use super::OraclePriceProof;
@@ -28,11 +28,6 @@ pub struct Market {
     /// current balance is `borrow_asset_balance = borrow_asset_deposited -
     /// <amount loaned out>`.
     pub borrow_asset_deposited: u128,
-    /// The current amount of borrow asset under direct control of the market.
-    pub borrow_asset_balance: u128,
-    /// The current amount of collateral asset under direct control of the
-    /// market.
-    pub collateral_asset_balance: u128,
     pub supply_positions: UnorderedMap<AccountId, SupplyPosition>,
     pub borrow_positions: UnorderedMap<AccountId, BorrowPosition>,
     pub total_borrow_asset_deposited_log: TreeMap<u64, u128>,
@@ -56,8 +51,6 @@ impl Market {
             prefix: prefix.clone(),
             configuration,
             borrow_asset_deposited: 0,
-            borrow_asset_balance: 0,
-            collateral_asset_balance: 0,
             supply_positions: UnorderedMap::new(key!(SupplyPositions)),
             borrow_positions: UnorderedMap::new(key!(BorrowPositions)),
             total_borrow_asset_deposited_log: TreeMap::new(key!(TotalBorrowAssetDepositedLog)),
@@ -153,11 +146,6 @@ impl Market {
             .unwrap_or_else(|| env::panic_str("Borrow position collateral asset overflow"));
 
         self.borrow_positions.insert(account_id, &borrow_position);
-
-        self.collateral_asset_balance = self
-            .collateral_asset_balance
-            .checked_add(amount)
-            .unwrap_or_else(|| env::panic_str("Collateral asset balance overflow"));
     }
 
     pub fn record_borrow_position_collateral_asset_withdrawal(
@@ -172,11 +160,6 @@ impl Market {
             .unwrap_or_else(|| env::panic_str("Borrow position collateral asset underflow"));
 
         self.borrow_positions.insert(account_id, &borrow_position);
-
-        self.collateral_asset_balance = self
-            .collateral_asset_balance
-            .checked_sub(amount)
-            .unwrap_or_else(|| env::panic_str("Collateral asset balance underflow"));
     }
 
     pub fn record_borrow_position_borrow_asset_withdrawal(
@@ -193,11 +176,6 @@ impl Market {
 
         self.borrow_positions.insert(account_id, &borrow_position);
 
-        self.borrow_asset_balance = self
-            .borrow_asset_balance
-            .checked_sub(dispersed_amount)
-            .unwrap_or_else(|| env::panic_str("Borrow asset balance underflow"));
-
         borrow_position
     }
 
@@ -213,11 +191,6 @@ impl Market {
             .unwrap_or_else(|| env::panic_str("Borrow position borrow asset liability underflow"));
 
         self.borrow_positions.insert(account_id, &borrow_position);
-
-        self.borrow_asset_balance = self
-            .borrow_asset_balance
-            .checked_add(amount)
-            .unwrap_or_else(|| env::panic_str("Total loan asset borrowed underflow"));
     }
 
     pub fn record_supply_position_collateral_rewards_withdrawal(
@@ -314,13 +287,6 @@ impl Market {
         recovered_borrow_asset_amount: u128,
     ) {
         let mut borrow_position = self.borrow_positions.get(account_id).unwrap_or_default();
-
-        let collateral_asset_amount_liquidated =
-            borrow_position.zero_out_collateral_asset_deposit();
-
-        // TODO: bounds checks
-        self.collateral_asset_balance -= collateral_asset_amount_liquidated;
-        self.borrow_asset_balance += recovered_borrow_asset_amount;
 
         if let Some(margin) =
             recovered_borrow_asset_amount.checked_sub(borrow_position.borrow_asset_liability.0)
