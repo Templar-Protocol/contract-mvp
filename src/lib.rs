@@ -1,4 +1,7 @@
-use std::ops::{Deref, DerefMut};
+use std::{
+    ops::{Deref, DerefMut},
+    usize,
+};
 
 use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
 use near_sdk::{
@@ -160,7 +163,7 @@ impl MarketExternalInterface for Contract {
 
     fn list_borrows(&self, offset: Option<U64>, count: Option<U64>) -> Vec<AccountId> {
         let offset = offset.map_or(0, |o| o.0 as usize);
-        let count = count.map_or(0, |c| c.0 as usize);
+        let count = count.map_or(usize::MAX, |c| c.0 as usize);
         self.borrow_positions
             .keys()
             .skip(offset)
@@ -170,7 +173,7 @@ impl MarketExternalInterface for Contract {
 
     fn list_supplys(&self, offset: Option<U64>, count: Option<U64>) -> Vec<AccountId> {
         let offset = offset.map_or(0, |o| o.0 as usize);
-        let count = count.map_or(0, |c| c.0 as usize);
+        let count = count.map_or(usize::MAX, |c| c.0 as usize);
         self.supply_positions
             .keys()
             .skip(offset)

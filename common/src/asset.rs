@@ -17,9 +17,9 @@ impl FungibleAsset {
             FungibleAsset::Native => {
                 Promise::new(receiver_id).transfer(NearToken::from_yoctonear(amount))
             }
-            FungibleAsset::Nep141(ref contract_id) => {
-                ext_ft_core::ext(contract_id.clone()).ft_transfer(receiver_id, amount.into(), None)
-            }
+            FungibleAsset::Nep141(ref contract_id) => ext_ft_core::ext(contract_id.clone())
+                .with_attached_deposit(NearToken::from_yoctonear(1))
+                .ft_transfer(receiver_id, amount.into(), None),
         }
     }
 
