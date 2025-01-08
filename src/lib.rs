@@ -7,7 +7,8 @@ use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
 use near_sdk::{
     env,
     json_types::{U128, U64},
-    near, require, AccountId, BorshStorageKey, PanicOnDefault, PromiseError, PromiseOrValue,
+    near, require, serde_json, AccountId, BorshStorageKey, PanicOnDefault, PromiseError,
+    PromiseOrValue,
 };
 use templar_common::{
     asset::FungibleAsset,
@@ -245,7 +246,8 @@ impl MarketExternalInterface for Contract {
         PromiseOrValue::Promise(
             self.configuration
                 .borrow_asset
-                .transfer(env::predecessor_account_id(), amount.0),
+                .transfer(env::predecessor_account_id(), amount.0)
+                .then(Self::ext(env::current_account_id()).return_static(serde_json::Value::Null)),
         )
     }
 
@@ -255,7 +257,7 @@ impl MarketExternalInterface for Contract {
 
     /// If the predecessor has already entered the queue, calling this function
     /// will reset the position to the back of the queue.
-    fn create_withdrawal_request(&mut self, amount: U128) {
+    fn create_supply_withdrawal_request(&mut self, amount: U128) {
         require!(amount.0 > 0, "Amount to withdraw must be greater than zero");
         let predecessor = env::predecessor_account_id();
         if self
@@ -275,11 +277,11 @@ impl MarketExternalInterface for Contract {
             .insert_or_update(&predecessor, amount.0);
     }
 
-    fn cancel_withdrawal(&mut self) {
+    fn cancel_supply_withdrawal_request(&mut self) {
         self.withdrawal_queue.remove(&env::predecessor_account_id());
     }
 
-    fn execute_next_withdrawal(&mut self) -> PromiseOrValue<()> {
+    fn execute_next_supply_withdrawal_request(&mut self) -> PromiseOrValue<()> {
         let Some((account_id, requested_amount)) = self.withdrawal_queue.try_lock() else {
             env::panic_str("Could not lock withdrawal queue. The queue may be empty or a withdrawal may be in-flight.")
         };
@@ -324,14 +326,14 @@ impl MarketExternalInterface for Contract {
         )
     }
 
-    fn get_withdrawal_request_status(
+    fn get_supply_withdrawal_request_status(
         &self,
         account_id: AccountId,
     ) -> Option<WithdrawalRequestStatus> {
         self.withdrawal_queue.get_request_status(account_id)
     }
 
-    fn get_withdrawal_queue_status(&self) -> WithdrawalQueueStatus {
+    fn get_supply_withdrawal_queue_status(&self) -> WithdrawalQueueStatus {
         self.withdrawal_queue.get_status()
     }
 
@@ -354,6 +356,11 @@ impl MarketExternalInterface for Contract {
 
 #[near]
 impl Contract {
+    #[private]
+    pub fn return_static(&self, value: serde_json::Value) -> serde_json::Value {
+        value
+    }
+
     #[private]
     pub fn after_execute_next_withdrawal(
         &mut self,

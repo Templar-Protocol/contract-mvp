@@ -111,6 +111,219 @@ async fn deploy_ft(
     contract
 }
 
+struct TestController {
+    contract: Contract,
+    borrow_asset: Contract,
+    collateral_asset: Contract,
+}
+
+impl TestController {
+    async fn storage_deposits(&self, account: &Account) {
+        println!("Performing storage deposits for {}...", account.id());
+        account
+            .call(self.borrow_asset.id(), "storage_deposit")
+            .args_json(json!({}))
+            .deposit(NearToken::from_near(1))
+            .transact()
+            .await
+            .unwrap()
+            .unwrap();
+        account
+            .call(self.collateral_asset.id(), "storage_deposit")
+            .args_json(json!({}))
+            .deposit(NearToken::from_near(1))
+            .transact()
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    async fn get_configuration(&self) -> MarketConfiguration {
+        self.contract
+            .view("get_configuration")
+            .args_json(json!({}))
+            .await
+            .unwrap()
+            .json::<MarketConfiguration>()
+            .unwrap()
+    }
+
+    async fn supply(&self, supply_user: &Account, amount: u128) {
+        println!(
+            "{} transferring {amount} tokens for supply...",
+            supply_user.id()
+        );
+        supply_user
+            .call(self.borrow_asset.id(), "ft_transfer_call")
+            .args_json(json!({
+                "receiver_id": self.contract.id(),
+                "amount": U128(amount),
+                "msg": serde_json::to_string(&Nep141MarketDepositMessage::Supply).unwrap(),
+            }))
+            .deposit(NearToken::from_yoctonear(1))
+            .max_gas()
+            .transact()
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    async fn get_supply_position(&self, account_id: &AccountId) -> Option<SupplyPosition> {
+        self.contract
+            .view("get_supply_position")
+            .args_json(json!({
+                "account_id": account_id,
+            }))
+            .await
+            .unwrap()
+            .json::<Option<SupplyPosition>>()
+            .unwrap()
+    }
+
+    async fn list_supplys(&self) -> Vec<AccountId> {
+        self.contract
+            .view("list_supplys")
+            .args_json(json!({}))
+            .await
+            .unwrap()
+            .json::<Vec<AccountId>>()
+            .unwrap()
+    }
+
+    async fn collateralize(&self, borrow_user: &Account, amount: u128) {
+        println!(
+            "{} transferring {amount} tokens for collateral...",
+            borrow_user.id(),
+        );
+        borrow_user
+            .call(self.collateral_asset.id(), "ft_transfer_call")
+            .args_json(json!({
+                "receiver_id": self.contract.id(),
+                "amount": U128(amount),
+                "msg": serde_json::to_string(&Nep141MarketDepositMessage::Collateralize).unwrap(),
+            }))
+            .deposit(NearToken::from_yoctonear(1))
+            .max_gas()
+            .transact()
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    async fn get_borrow_position(&self, account_id: &AccountId) -> Option<BorrowPosition> {
+        self.contract
+            .view("get_borrow_position")
+            .args_json(json!({
+                "account_id": account_id,
+            }))
+            .await
+            .unwrap()
+            .json::<Option<BorrowPosition>>()
+            .unwrap()
+    }
+
+    async fn list_borrows(&self) -> Vec<AccountId> {
+        self.contract
+            .view("list_borrows")
+            .args_json(json!({}))
+            .await
+            .unwrap()
+            .json::<Vec<AccountId>>()
+            .unwrap()
+    }
+
+    async fn get_borrow_status(
+        &self,
+        account_id: &AccountId,
+        price: OraclePriceProof,
+    ) -> Option<BorrowStatus> {
+        self.contract
+            .view("get_borrow_status")
+            .args_json(json!({
+                "account_id": account_id,
+                "oracle_price_proof": price,
+            }))
+            .await
+            .unwrap()
+            .json::<Option<BorrowStatus>>()
+            .unwrap()
+    }
+
+    async fn borrow(&self, borrow_user: &Account, amount: u128, price: OraclePriceProof) {
+        println!("{} borrowing {amount} tokens...", borrow_user.id());
+        borrow_user
+            .call(self.contract.id(), "borrow")
+            .args_json(json!({
+                "amount": U128(amount),
+                "oracle_price_proof": price,
+            }))
+            .max_gas()
+            .transact()
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    async fn borrow_asset_balance_of(&self, account_id: &AccountId) -> u128 {
+        self.borrow_asset
+            .view("ft_balance_of")
+            .args_json(json!({
+                "account_id": account_id,
+            }))
+            .await
+            .unwrap()
+            .json::<U128>()
+            .unwrap()
+            .0
+    }
+
+    async fn asset_transfer(
+        &self,
+        asset_id: &AccountId,
+        sender: &Account,
+        receiver_id: &AccountId,
+        amount: u128,
+    ) {
+        println!(
+            "{} sending {amount} tokens of {asset_id} to {receiver_id}...",
+            sender.id(),
+        );
+        sender
+            .call(asset_id, "ft_transfer")
+            .args_json(json!({
+                "receiver_id": receiver_id,
+                "amount": U128(amount),
+            }))
+            .deposit(NearToken::from_yoctonear(1))
+            .transact()
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    async fn borrow_asset_transfer(&self, sender: &Account, receiver_id: &AccountId, amount: u128) {
+        self.asset_transfer(self.borrow_asset.id(), sender, receiver_id, amount)
+            .await;
+    }
+
+    async fn repay(&self, borrow_user: &Account, amount: u128) {
+        println!("{} repaying {amount} tokens...", borrow_user.id());
+        borrow_user
+            .call(self.borrow_asset.id(), "ft_transfer_call")
+            .args_json(json!({
+                "receiver_id": self.contract.id(),
+                "amount": U128(amount),
+                "msg": serde_json::to_string(&Nep141MarketDepositMessage::Repay).unwrap(),
+            }))
+            .deposit(NearToken::from_yoctonear(1))
+            .max_gas()
+            .transact()
+            .await
+            .unwrap()
+            .unwrap();
+    }
+}
+
 // ===== TESTS =====
 
 #[tokio::test]
@@ -150,90 +363,45 @@ async fn test_market_happy_path() {
     )
     .await;
 
-    // Asset opt-ins.
-    let storage_deposit = move |account: &Account, asset_id: &AccountId| {
-        account
-            .call(asset_id, "storage_deposit")
-            .args_json(json!({}))
-            .deposit(NearToken::from_near(1))
-            .transact()
+    let c = TestController {
+        contract,
+        collateral_asset,
+        borrow_asset,
     };
-    storage_deposit(contract.as_account(), borrow_asset.id())
-        .await
-        .unwrap()
-        .unwrap();
-    storage_deposit(contract.as_account(), collateral_asset.id())
-        .await
-        .unwrap()
-        .unwrap();
-    storage_deposit(&borrow_user, borrow_asset.id())
-        .await
-        .unwrap()
-        .unwrap();
 
-    let configuration = contract
-        .view("get_configuration")
-        .args_json(json!({}))
-        .await
-        .unwrap()
-        .json::<MarketConfiguration>()
-        .unwrap();
+    // Asset opt-ins.
+    tokio::join!(
+        c.storage_deposits(c.contract.as_account()),
+        c.storage_deposits(&borrow_user),
+        c.storage_deposits(&supply_user),
+    );
+
+    let configuration = c.get_configuration().await;
 
     assert_eq!(
         &configuration.collateral_asset.into_nep141().unwrap(),
-        collateral_asset.id(),
+        c.collateral_asset.id(),
     );
     assert_eq!(
         &configuration.borrow_asset.into_nep141().unwrap(),
-        borrow_asset.id()
+        c.borrow_asset.id()
     );
     assert_eq!(
         configuration.minimum_collateral_ratio_per_borrow,
         Rational::new(120, 100)
     );
 
-    println!("{} depositing 100 tokens for supply...", supply_user.id());
-
     // Step 1: Supply user sends tokens to contract to use for borrows.
-    supply_user
-        .call(borrow_asset.id(), "ft_transfer_call")
-        .args_json(json!({
-            "receiver_id": contract.id(),
-            "amount": U128(100),
-            "msg": serde_json::to_string(&Nep141MarketDepositMessage::Supply).unwrap(),
-        }))
-        .deposit(NearToken::from_yoctonear(1))
-        .max_gas()
-        .transact()
-        .await
-        .unwrap()
-        .unwrap();
+    c.supply(&supply_user, 100).await;
 
-    println!("Checking supply position...");
-
-    let supply_position = contract
-        .view("get_supply_position")
-        .args_json(json!({
-            "account_id": supply_user.id(),
-        }))
-        .await
-        .unwrap()
-        .json::<Option<SupplyPosition>>()
-        .unwrap()
-        .unwrap();
+    let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
 
     assert_eq!(
         supply_position.borrow_asset_deposited.0, 100,
         "Supply position should match amount of tokens supplied to contract",
     );
 
-    let list_supplys = contract
-        .view("list_supplys")
-        .args_json(json!({}))
-        .await
-        .unwrap()
-        .json::<Vec<AccountId>>()
-        .unwrap();
+    let list_supplys = c.list_supplys().await;
 
     assert_eq!(
         list_supplys,
@@ -243,48 +411,16 @@ async fn test_market_happy_path() {
 
     // Step 2: Borrow user deposits collateral
 
-    println!(
-        "{} depositing 200 tokens for collateral...",
-        borrow_user.id(),
-    );
+    c.collateralize(&borrow_user, 200).await;
 
-    borrow_user
-        .call(collateral_asset.id(), "ft_transfer_call")
-        .args_json(json!({
-            "receiver_id": contract.id(),
-            "amount": U128(200),
-            "msg": serde_json::to_string(&Nep141MarketDepositMessage::Collateralize).unwrap(),
-        }))
-        .deposit(NearToken::from_yoctonear(1))
-        .max_gas()
-        .transact()
-        .await
-        .unwrap()
-        .unwrap();
-
-    let borrow_position = contract
-        .view("get_borrow_position")
-        .args_json(json!({
-            "account_id": borrow_user.id(),
-        }))
-        .await
-        .unwrap()
-        .json::<Option<BorrowPosition>>()
-        .unwrap()
-        .unwrap();
+    let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
 
     assert_eq!(
         borrow_position.collateral_asset_deposit.0, 200,
         "Collateral asset deposit should be equal to the number of collateral tokens sent",
     );
 
-    let list_borrows = contract
-        .view("list_borrows")
-        .args_json(json!({}))
-        .await
-        .unwrap()
-        .json::<Vec<AccountId>>()
-        .unwrap();
+    let list_borrows = c.list_borrows().await;
 
     assert_eq!(
         list_borrows,
@@ -297,16 +433,9 @@ async fn test_market_happy_path() {
         borrow_asset_price: Rational::new(1, 1),
     };
 
-    let borrow_status = contract
-        .view("get_borrow_status")
-        .args_json(json!({
-            "account_id": borrow_user.id(),
-            "oracle_price_proof": equal_price,
-        }))
+    let borrow_status = c
+        .get_borrow_status(borrow_user.id(), equal_price)
         .await
-        .unwrap()
-        .json::<Option<BorrowStatus>>()
-        .unwrap()
         .unwrap();
 
     assert_eq!(
@@ -317,30 +446,28 @@ async fn test_market_happy_path() {
 
     // Step 3: Withdraw some of the borrow asset
 
-    println!("Requesting borrow...");
-
-    // fn borrow(&mut self, amount: U128, oracle_price_proof: OraclePriceProof) -> PromiseOrValue<()>;
     // Borrowing 100 borrow tokens with 200 collateral tokens should be fine given equal price and MCR of 120%.
-    borrow_user
-        .call(contract.id(), "borrow")
-        .args_json(json!({
-            "amount": U128(100),
-            "oracle_price_proof": equal_price,
-        }))
-        .transact()
-        .await
-        .unwrap()
-        .unwrap();
+    c.borrow(&borrow_user, 100, equal_price).await;
 
-    let balance = borrow_asset
-        .view("ft_balance_of")
-        .args_json(json!({
-            "account_id": borrow_user.id(),
-        }))
-        .await
-        .unwrap()
-        .json::<U128>()
-        .unwrap();
+    let balance = c.borrow_asset_balance_of(borrow_user.id()).await;
 
-    assert_eq!(balance.0, 100, "Borrow user should receive assets");
+    assert_eq!(balance, 100, "Borrow user should receive assets");
+
+    let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
+
+    assert_eq!(
+        borrow_position,
+        BorrowPosition {
+            collateral_asset_deposit: U128(200),
+            borrow_asset_liability: U128(100 + 1), // origination fee
+        },
+    );
+
+    // Step 4: Repay borrow
+
+    // Need extra to pay for origination fee.
+    c.borrow_asset_transfer(&supply_user, borrow_user.id(), 1)
+        .await;
+
+    c.repay(&borrow_user, 101).await;
 }

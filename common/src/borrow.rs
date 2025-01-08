@@ -7,7 +7,7 @@ pub enum BorrowStatus {
     Liquidation,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 #[near(serializers = [borsh, json])]
 pub struct BorrowPosition {
     pub collateral_asset_deposit: U128,

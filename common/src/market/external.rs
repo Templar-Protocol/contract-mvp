@@ -11,7 +11,7 @@ use crate::{
 
 use super::{BorrowAssetMetrics, MarketConfiguration, OraclePriceProof};
 
-// #[near_sdk::ext_contract(ext_market)]
+#[near_sdk::ext_contract(ext_market)]
 pub trait MarketExternalInterface {
     // ========================
     // MARKET GENERAL FUNCTIONS
@@ -75,15 +75,15 @@ pub trait MarketExternalInterface {
 
     fn get_supply_position(&self, account_id: AccountId) -> Option<SupplyPosition>;
 
-    fn create_withdrawal_request(&mut self, amount: U128);
-    fn cancel_withdrawal(&mut self);
+    fn create_supply_withdrawal_request(&mut self, amount: U128);
+    fn cancel_supply_withdrawal_request(&mut self);
     /// Auto-harvests yield.
-    fn execute_next_withdrawal(&mut self) -> PromiseOrValue<()>;
-    fn get_withdrawal_request_status(
+    fn execute_next_supply_withdrawal_request(&mut self) -> PromiseOrValue<()>;
+    fn get_supply_withdrawal_request_status(
         &self,
         account_id: AccountId,
     ) -> Option<WithdrawalRequestStatus>;
-    fn get_withdrawal_queue_status(&self) -> WithdrawalQueueStatus;
+    fn get_supply_withdrawal_queue_status(&self) -> WithdrawalQueueStatus;
 
     fn harvest_yield(&mut self);
 
