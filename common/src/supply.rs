@@ -3,39 +3,43 @@ use near_sdk::{
     near,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct SupplyPosition {
-    pub borrow_asset_deposited: U128,
+    borrow_asset_deposit: U128,
     pub borrow_asset_rewards: RewardRecord,
-    pub collateral_asset_rewards: RewardRecord,
 }
 
 impl SupplyPosition {
     pub fn new(block_height: u64) -> Self {
         Self {
-            borrow_asset_deposited: 0.into(),
+            borrow_asset_deposit: 0.into(),
             borrow_asset_rewards: RewardRecord::new(block_height),
-            collateral_asset_rewards: RewardRecord::new(block_height),
         }
     }
 
+    pub fn get_borrow_asset_deposit(&self) -> u128 {
+        self.borrow_asset_deposit.0
+    }
+
     pub fn exists(&self) -> bool {
-        self.borrow_asset_deposited.0 != 0
-            || self.borrow_asset_rewards.amount.0 != 0
-            || self.collateral_asset_rewards.amount.0 != 0
+        self.borrow_asset_deposit.0 != 0 || self.borrow_asset_rewards.amount.0 != 0
     }
 
-    pub fn deposit_borrow_asset(&mut self, amount: u128) -> Option<U128> {
-        self.borrow_asset_deposited.0 = self.borrow_asset_deposited.0.checked_add(amount)?;
-        Some(self.borrow_asset_deposited)
+    /// MUST always be paired with a rewards recalculation!
+    pub(crate) fn increase_borrow_asset_deposit(&mut self, amount: u128) -> Option<U128> {
+        self.borrow_asset_deposit.0 = self.borrow_asset_deposit.0.checked_add(amount)?;
+        Some(self.borrow_asset_deposit)
     }
 
-    pub fn withdraw_borrow_asset(&mut self, amount: u128) -> Option<U128> {
-        self.borrow_asset_deposited.0 = self.borrow_asset_deposited.0.checked_sub(amount)?;
-        Some(self.borrow_asset_deposited)
+    /// MUST always be paired with a rewards recalculation!
+    pub(crate) fn decrease_borrow_asset_deposit(&mut self, amount: u128) -> Option<U128> {
+        self.borrow_asset_deposit.0 = self.borrow_asset_deposit.0.checked_sub(amount)?;
+        Some(self.borrow_asset_deposit)
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct RewardRecord {
     pub amount: U128,
@@ -56,8 +60,9 @@ impl RewardRecord {
         Some(self.amount)
     }
 
-    pub fn accumulate_rewards(&mut self, new_rewards: u128, block_height: u64) {
-        self.amount.0 += new_rewards;
+    pub fn accumulate_rewards(&mut self, additional_rewards: u128, block_height: u64) {
+        debug_assert!(block_height > self.last_updated_block_height.0);
+        self.amount.0 += additional_rewards;
         self.last_updated_block_height.0 = block_height;
     }
 }

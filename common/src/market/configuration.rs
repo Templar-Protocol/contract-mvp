@@ -28,8 +28,8 @@ pub struct MarketConfiguration {
     /// borrow. That is to say, the origination fee is denominated in units of
     /// the borrow asset and is paid by the borrowing account during repayment
     /// (or liquidation).
-    pub origination_fee: Fee,
-    pub annual_maintenance_fee: Fee,
+    pub borrow_origination_fee: Fee,
+    pub borrow_annual_maintenance_fee: Fee,
     pub maximum_borrow_duration: Option<U64>,
     pub minimum_borrow_amount: U128,
     pub maximum_borrow_amount: U128,
@@ -50,7 +50,7 @@ impl MarketConfiguration {
             * collateral_asset_price.numerator()
             * borrow_asset_price.denominator()
             * self.minimum_collateral_ratio_per_borrow.denominator() as u128;
-        let scaled_borrow_value = borrow_position.borrow_asset_liability.0
+        let scaled_borrow_value = borrow_position.total_borrow_asset_liability()
             * borrow_asset_price.numerator()
             * collateral_asset_price.denominator()
             * self.minimum_collateral_ratio_per_borrow.numerator() as u128;
@@ -82,8 +82,8 @@ mod tests {
                 liquidator_account_id: "templar-in-training.testnet".parse().unwrap(),
                 minimum_collateral_ratio_per_borrow: Rational::new(120, 100),
                 maximum_borrow_asset_usage_ratio: Rational::new(99, 100),
-                origination_fee: Fee::Proportional(Rational::new(1, 100)),
-                annual_maintenance_fee: Fee::Flat(0.into()),
+                borrow_origination_fee: Fee::Proportional(Rational::new(1, 100)),
+                borrow_annual_maintenance_fee: Fee::Flat(0.into()),
                 maximum_borrow_duration: None,
                 minimum_borrow_amount: 1.into(),
                 maximum_borrow_amount: u128::MAX.into(),

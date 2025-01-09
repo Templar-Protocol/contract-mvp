@@ -1,5 +1,5 @@
 use near_sdk::{
-    json_types::U128,
+    json_types::{U128, U64},
     serde_json::{self, json},
     AccountId, AccountIdRef, NearToken,
 };
@@ -48,8 +48,8 @@ fn market_configuration(
         liquidator_account_id,
         minimum_collateral_ratio_per_borrow: Rational::new(120, 100),
         maximum_borrow_asset_usage_ratio: Rational::new(99, 100),
-        origination_fee: Fee::Proportional(Rational::new(1, 100)),
-        annual_maintenance_fee: Fee::Flat(0.into()),
+        borrow_origination_fee: Fee::Proportional(Rational::new(10, 100)),
+        borrow_annual_maintenance_fee: Fee::Flat(0.into()),
         maximum_borrow_duration: None,
         minimum_borrow_amount: 1.into(),
         maximum_borrow_amount: u128::MAX.into(),
@@ -322,6 +322,51 @@ impl TestController {
             .unwrap()
             .unwrap();
     }
+
+    async fn harvest_yield(&self, supply_user: &Account) {
+        println!("{} harvesting yield...", supply_user.id());
+        supply_user
+            .call(self.contract.id(), "harvest_yield")
+            .args_json(json!({}))
+            .transact()
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    async fn print_logs(&self) {
+        let total_borrow_asset_deposited_log = self
+            .contract
+            .view("get_total_borrow_asset_deposited_log")
+            .args_json(json!({}))
+            .await
+            .unwrap()
+            .json::<Vec<(U64, U128)>>()
+            .unwrap();
+
+        println!("Total borrow asset deposited log:");
+        for (i, (U64(block_height), U128(amount))) in
+            total_borrow_asset_deposited_log.iter().enumerate()
+        {
+            println!("\t{i}: {amount}\t[#{block_height}]");
+        }
+
+        let borrow_asset_reward_distribution_log = self
+            .contract
+            .view("get_borrow_asset_reward_distribution_log")
+            .args_json(json!({}))
+            .await
+            .unwrap()
+            .json::<Vec<(U64, U128)>>()
+            .unwrap();
+
+        println!("Borrow asset reward distribution log:");
+        for (i, (U64(block_height), U128(amount))) in
+            borrow_asset_reward_distribution_log.iter().enumerate()
+        {
+            println!("\t{i}: {amount}\t[#{block_height}]");
+        }
+    }
 }
 
 // ===== TESTS =====
@@ -397,7 +442,8 @@ async fn test_market_happy_path() {
     let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
 
     assert_eq!(
-        supply_position.borrow_asset_deposited.0, 100,
+        supply_position.get_borrow_asset_deposit(),
+        100,
         "Supply position should match amount of tokens supplied to contract",
     );
 
@@ -455,19 +501,26 @@ async fn test_market_happy_path() {
 
     let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
 
-    assert_eq!(
-        borrow_position,
-        BorrowPosition {
-            collateral_asset_deposit: U128(200),
-            borrow_asset_liability: U128(100 + 1), // origination fee
-        },
-    );
+    assert_eq!(borrow_position.collateral_asset_deposit.0, 200);
+    assert_eq!(borrow_position.total_borrow_asset_liability(), 100 + 10); // origination fee
 
     // Step 4: Repay borrow
 
     // Need extra to pay for origination fee.
-    c.borrow_asset_transfer(&supply_user, borrow_user.id(), 1)
+    c.borrow_asset_transfer(&supply_user, borrow_user.id(), 10)
         .await;
 
-    c.repay(&borrow_user, 101).await;
+    c.repay(&borrow_user, 110).await;
+
+    // Ensure borrow is paid off.
+    let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
+
+    assert_eq!(borrow_position.collateral_asset_deposit.0, 200);
+    assert_eq!(borrow_position.total_borrow_asset_liability(), 0);
+
+    // Check rewards for supply.
+    c.harvest_yield(&supply_user).await;
+    let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
+    // TODO: Divide rewards among supply, liquidator, protocol, etc.
+    assert_eq!(supply_position.borrow_asset_rewards.amount.0, 10);
 }
