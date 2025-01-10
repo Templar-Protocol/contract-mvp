@@ -42,8 +42,8 @@ fn market_configuration(
     liquidator_account_id: AccountId,
 ) -> MarketConfiguration {
     MarketConfiguration {
-        borrow_asset: FungibleAsset::Nep141(borrow_asset_id),
-        collateral_asset: FungibleAsset::Nep141(collateral_asset_id),
+        borrow_asset: FungibleAsset::nep141(borrow_asset_id),
+        collateral_asset: FungibleAsset::nep141(collateral_asset_id),
         balance_oracle_account_id: "balance_oracle".parse().unwrap(),
         liquidator_account_id,
         minimum_collateral_ratio_per_borrow: Rational::new(120, 100),
@@ -442,7 +442,7 @@ async fn test_market_happy_path() {
     let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
 
     assert_eq!(
-        supply_position.get_borrow_asset_deposit(),
+        supply_position.get_borrow_asset_deposit().as_u128(),
         100,
         "Supply position should match amount of tokens supplied to contract",
     );
@@ -462,7 +462,8 @@ async fn test_market_happy_path() {
     let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
 
     assert_eq!(
-        borrow_position.collateral_asset_deposit.0, 200,
+        borrow_position.collateral_asset_deposit.as_u128(),
+        200,
         "Collateral asset deposit should be equal to the number of collateral tokens sent",
     );
 
@@ -501,8 +502,11 @@ async fn test_market_happy_path() {
 
     let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
 
-    assert_eq!(borrow_position.collateral_asset_deposit.0, 200);
-    assert_eq!(borrow_position.total_borrow_asset_liability(), 100 + 10); // origination fee
+    assert_eq!(borrow_position.collateral_asset_deposit.as_u128(), 200);
+    assert_eq!(
+        borrow_position.get_total_borrow_asset_liability().as_u128(),
+        100 + 10
+    ); // origination fee
 
     // Step 4: Repay borrow
 
@@ -515,12 +519,15 @@ async fn test_market_happy_path() {
     // Ensure borrow is paid off.
     let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
 
-    assert_eq!(borrow_position.collateral_asset_deposit.0, 200);
-    assert_eq!(borrow_position.total_borrow_asset_liability(), 0);
+    assert_eq!(borrow_position.collateral_asset_deposit.as_u128(), 200);
+    assert_eq!(
+        borrow_position.get_total_borrow_asset_liability().as_u128(),
+        0
+    );
 
     // Check rewards for supply.
     c.harvest_yield(&supply_user).await;
     let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
     // TODO: Divide rewards among supply, liquidator, protocol, etc.
-    assert_eq!(supply_position.borrow_asset_rewards.amount.0, 10);
+    assert_eq!(supply_position.borrow_asset_rewards.amount.as_u128(), 10);
 }

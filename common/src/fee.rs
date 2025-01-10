@@ -1,32 +1,34 @@
-use near_sdk::{
-    json_types::{U128, U64},
-    near,
-};
+use near_sdk::{json_types::U64, near};
 
-use crate::rational::Rational;
+use crate::{
+    asset::{AssetClass, FungibleAssetAmount},
+    rational::Rational,
+};
 
 #[derive(Clone, Debug)]
 #[near(serializers = [json, borsh])]
-pub enum Fee {
-    Flat(U128),
+pub enum Fee<T: AssetClass> {
+    Flat(FungibleAssetAmount<T>),
     Proportional(Rational<u16>),
 }
 
-impl Fee {
-    pub fn of(&self, amount: u128) -> Option<u128> {
+impl<T: AssetClass> Fee<T> {
+    pub fn of(&self, amount: FungibleAssetAmount<T>) -> Option<FungibleAssetAmount<T>> {
         match self {
-            Fee::Flat(f) => Some(f.0),
-            Fee::Proportional(rational) => {
-                rational.upcast::<u128>().checked_scalar_mul(amount)?.ceil()
-            }
+            Fee::Flat(f) => Some(f.clone()),
+            Fee::Proportional(rational) => rational
+                .upcast::<u128>()
+                .checked_scalar_mul(amount.as_u128())?
+                .ceil()
+                .map(Into::into),
         }
     }
 }
 
 #[derive(Clone, Debug)]
 #[near(serializers = [json, borsh])]
-pub struct TimeBasedFee {
-    pub fee: Fee,
+pub struct TimeBasedFee<T: AssetClass> {
+    pub fee: Fee<T>,
     pub duration: U64,
     pub behavior: TimeBasedFeeFunction,
 }
@@ -39,25 +41,26 @@ pub enum TimeBasedFeeFunction {
     Logarithmic,
 }
 
-impl TimeBasedFee {
-    pub fn of(&self, amount: u128, time: u64) -> Option<u128> {
+impl<T: AssetClass> TimeBasedFee<T> {
+    pub fn of(&self, amount: FungibleAssetAmount<T>, time: u64) -> Option<FungibleAssetAmount<T>> {
         let base_fee = self.fee.of(amount)?;
 
         if self.duration.0 == 0 {
-            return Some(0);
+            return Some(0.into());
         }
 
         match self.behavior {
             TimeBasedFeeFunction::Fixed => Some(base_fee),
-            TimeBasedFeeFunction::Linear => Some(
-                base_fee
-                    .checked_mul(u128::from(time))?
-                    .div_ceil(u128::from(self.duration.0)),
-            ),
+            TimeBasedFeeFunction::Linear => Rational::new(time, self.duration.0)
+                .upcast::<u128>()
+                .checked_scalar_mul(base_fee.as_u128())?
+                .ceil()
+                .map(Into::into),
             TimeBasedFeeFunction::Logarithmic => Some(
-                ((base_fee as f64 * f64::log2((1 + time - self.duration.0) as f64))
+                (((base_fee.as_u128() as f64 * f64::log2((1 + time - self.duration.0) as f64))
                     / f64::log2((1 + time) as f64))
-                .ceil() as u128,
+                .ceil() as u128)
+                    .into(),
             ),
         }
     }

@@ -1,52 +1,79 @@
-use std::fmt::Display;
+use std::{fmt::Display, marker::PhantomData};
 
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{env, ext_contract, json_types::U128, near, AccountId, NearToken, Promise};
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[near(serializers = [json, borsh])]
-pub enum FungibleAsset {
-    #[default]
+pub struct FungibleAsset<T: AssetClass> {
+    #[serde(skip)]
+    #[borsh(skip)]
+    discriminant: PhantomData<T>,
+    #[serde(flatten)]
+    kind: FungibleAssetKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[near(serializers = [json, borsh])]
+enum FungibleAssetKind {
     Native,
     Nep141(AccountId),
 }
 
-impl FungibleAsset {
-    pub fn transfer(&self, receiver_id: AccountId, amount: u128) -> Promise {
-        match self {
-            FungibleAsset::Native => {
-                Promise::new(receiver_id).transfer(NearToken::from_yoctonear(amount))
+impl<T: AssetClass> FungibleAsset<T> {
+    pub fn transfer(&self, receiver_id: AccountId, amount: FungibleAssetAmount<T>) -> Promise {
+        match self.kind {
+            FungibleAssetKind::Native => {
+                Promise::new(receiver_id).transfer(NearToken::from_yoctonear(amount.as_u128()))
             }
-            FungibleAsset::Nep141(ref contract_id) => ext_ft_core::ext(contract_id.clone())
+            FungibleAssetKind::Nep141(ref contract_id) => ext_ft_core::ext(contract_id.clone())
                 .with_attached_deposit(NearToken::from_yoctonear(1))
-                .ft_transfer(receiver_id, amount.into(), None),
+                .ft_transfer(receiver_id, amount.as_u128().into(), None),
+        }
+    }
+
+    pub fn native() -> Self {
+        Self {
+            discriminant: PhantomData,
+            kind: FungibleAssetKind::Native,
+        }
+    }
+
+    pub fn nep141(contract_id: AccountId) -> Self {
+        Self {
+            discriminant: PhantomData,
+            kind: FungibleAssetKind::Nep141(contract_id),
         }
     }
 
     pub fn is_native(&self) -> bool {
-        matches!(self, Self::Native)
+        matches!(self.kind, FungibleAssetKind::Native)
     }
 
-    pub fn is_nep141(&self) -> bool {
-        matches!(self, Self::Nep141(..))
+    pub fn is_nep141(&self, account_id: &AccountId) -> bool {
+        if let FungibleAssetKind::Nep141(ref contract_id) = self.kind {
+            contract_id == account_id
+        } else {
+            false
+        }
     }
 
     pub fn into_nep141(self) -> Option<AccountId> {
-        match self {
-            Self::Nep141(contract_id) => Some(contract_id),
+        match self.kind {
+            FungibleAssetKind::Nep141(contract_id) => Some(contract_id),
             _ => None,
         }
     }
 
     pub fn current_account_balance(&self, meta: Vec<u8>) -> Promise {
         let current_account_id = env::current_account_id();
-        match self {
-            FungibleAsset::Native => {
+        match self.kind {
+            FungibleAssetKind::Native => {
                 let balance = U128(env::account_balance().as_yoctonear());
                 ext_fungible_asset_balance_receiver::ext(current_account_id)
                     .private_receive_fungible_asset_balance(Some(balance), meta)
             }
-            FungibleAsset::Nep141(account_id) => ext_ft_core::ext(account_id.clone())
+            FungibleAssetKind::Nep141(ref account_id) => ext_ft_core::ext(account_id.clone())
                 .ft_balance_of(current_account_id.clone())
                 .then(
                     ext_fungible_asset_balance_receiver::ext(current_account_id)
@@ -69,46 +96,83 @@ pub trait FungibleAssetBalanceReceiver {
     );
 }
 
-impl Display for FungibleAsset {
+impl<T: AssetClass> Display for FungibleAsset<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "{}",
-            match self {
-                Self::Native => "[native NEAR]",
-                Self::Nep141(ref contract_id) => contract_id.as_str(),
+            match self.kind {
+                FungibleAssetKind::Native => "[native NEAR]",
+                FungibleAssetKind::Nep141(ref contract_id) => contract_id.as_str(),
             }
         )
     }
 }
 
+mod sealed {
+    pub trait Sealed {}
+}
+pub trait AssetClass: sealed::Sealed + Copy + Clone {}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[must_use]
 #[near(serializers = [borsh, json])]
-pub struct FungibleAssetAmount {
+pub struct CollateralAsset;
+impl sealed::Sealed for CollateralAsset {}
+impl AssetClass for CollateralAsset {}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[near(serializers = [borsh, json])]
+pub struct BorrowAsset;
+impl sealed::Sealed for BorrowAsset {}
+impl AssetClass for BorrowAsset {}
+
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[near(serializers = [borsh, json])]
+pub struct FungibleAssetAmount<T: AssetClass> {
     amount: U128,
+    #[serde(skip)]
+    #[borsh(skip)]
+    discriminant: PhantomData<T>,
 }
 
-impl FungibleAssetAmount {
+impl<T: AssetClass> From<u128> for FungibleAssetAmount<T> {
+    fn from(value: u128) -> Self {
+        Self::new(value)
+    }
+}
+
+impl<T: AssetClass> FungibleAssetAmount<T> {
     pub fn new(amount: u128) -> Self {
         Self {
             amount: amount.into(),
+            discriminant: PhantomData,
         }
     }
 
-    pub fn split(&mut self, amount: u128) -> Option<Self> {
-        self.amount.0 = self.amount.0.checked_sub(amount)?;
-        Some(Self {
-            amount: amount.into(),
-        })
+    pub fn zero() -> Self {
+        Self {
+            amount: 0.into(),
+            discriminant: PhantomData,
+        }
+    }
+
+    pub fn is_zero(&self) -> bool {
+        self.amount.0 == 0
+    }
+
+    pub fn as_u128(&self) -> u128 {
+        self.amount.0
+    }
+
+    pub fn split(&mut self, amount: Self) -> Option<Self> {
+        self.amount.0 = self.amount.0.checked_sub(amount.amount.0)?;
+        Some(amount)
     }
 
     pub fn join(&mut self, other: Self) -> Option<()> {
         self.amount.0 = self.amount.0.checked_add(other.amount.0)?;
         Some(())
     }
-
-    pub fn transfer(self, asset: &FungibleAsset, receiver_id: AccountId) -> Promise {
-        asset.transfer(receiver_id, self.amount.0)
-    }
 }
+
+pub type BorrowAssetAmount = FungibleAssetAmount<BorrowAsset>;
+pub type CollateralAssetAmount = FungibleAssetAmount<CollateralAsset>;
