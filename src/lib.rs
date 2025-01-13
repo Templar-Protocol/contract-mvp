@@ -7,7 +7,7 @@ use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
 use near_sdk::{
     env,
     json_types::{U128, U64},
-    near, require, serde_json, AccountId, BorshStorageKey, PanicOnDefault, PromiseError,
+    near, require, serde_json, AccountId, BorshStorageKey, PanicOnDefault, Promise, PromiseError,
     PromiseOrValue,
 };
 use templar_common::{
@@ -17,6 +17,7 @@ use templar_common::{
         BorrowAssetMetrics, LiquidateMsg, Market, MarketConfiguration, MarketExternalInterface,
         Nep141MarketDepositMessage, OraclePriceProof,
     },
+    static_yield::StaticYieldRecord,
     supply::SupplyPosition,
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
 };
@@ -350,16 +351,93 @@ impl MarketExternalInterface for Contract {
         }
     }
 
-    fn withdraw_supply_yield(&mut self, amount: U128) {
-        todo!()
+    fn get_static_yield(&self, account_id: AccountId) -> Option<StaticYieldRecord> {
+        self.static_yield.get(&account_id)
     }
 
-    fn withdraw_liquidator_yield(&mut self, amount: U128) {
-        todo!()
+    fn withdraw_supply_yield(&mut self, amount: Option<U128>) -> Promise {
+        let predecessor = env::predecessor_account_id();
+        let Some(mut supply_position) = self.supply_positions.get(&predecessor) else {
+            env::panic_str("Supply position does not exist");
+        };
+
+        let amount = amount.map_or_else(
+            || supply_position.borrow_asset_yield.amount.as_u128(),
+            |amount| amount.0,
+        );
+
+        let withdrawn = supply_position.borrow_asset_yield.withdraw(amount).unwrap();
+        if withdrawn.is_zero() {
+            env::panic_str("No rewards can be withdrawn");
+        }
+        self.supply_positions.insert(&predecessor, &supply_position);
+
+        // TODO: Check for transfer success.
+        self.configuration
+            .borrow_asset
+            .transfer(predecessor, withdrawn)
     }
 
-    fn withdraw_protocol_yield(&mut self, amount: U128) {
-        todo!()
+    fn withdraw_static_yield(
+        &mut self,
+        borrow_asset_amount: Option<BorrowAssetAmount>,
+        collateral_asset_amount: Option<CollateralAssetAmount>,
+    ) -> Promise {
+        let predecessor = env::predecessor_account_id();
+        let Some(mut static_yield_record) = self.static_yield.get(&predecessor) else {
+            env::panic_str("Yield record does not exist");
+        };
+
+        let (borrow_asset_amount, collateral_asset_amount) =
+            if borrow_asset_amount.is_none() && collateral_asset_amount.is_none() {
+                // no arguments = withdraw all
+                (
+                    static_yield_record.borrow_asset,
+                    static_yield_record.collateral_asset,
+                )
+            } else {
+                (
+                    borrow_asset_amount.unwrap_or_default(),
+                    collateral_asset_amount.unwrap_or_default(),
+                )
+            };
+
+        static_yield_record
+            .borrow_asset
+            .split(borrow_asset_amount)
+            .unwrap_or_else(|| env::panic_str("Borrow asset yield underflow"));
+        static_yield_record
+            .collateral_asset
+            .split(collateral_asset_amount)
+            .unwrap_or_else(|| env::panic_str("Collateral asset yield underflow"));
+
+        self.static_yield.insert(&predecessor, &static_yield_record);
+
+        let borrow_promise = if !borrow_asset_amount.is_zero() {
+            Some(
+                self.configuration
+                    .borrow_asset
+                    .transfer(predecessor.clone(), borrow_asset_amount),
+            )
+        } else {
+            None
+        };
+
+        let collateral_promise = if !collateral_asset_amount.is_zero() {
+            Some(
+                self.configuration
+                    .collateral_asset
+                    .transfer(predecessor.clone(), collateral_asset_amount),
+            )
+        } else {
+            None
+        };
+
+        match (borrow_promise, collateral_promise) {
+            (Some(b), Some(c)) => b.and(c),
+            (Some(p), _) | (_, Some(p)) => p,
+            _ => env::panic_str("No yield to withdraw"),
+        } // TODO: Check for success
     }
 }
 

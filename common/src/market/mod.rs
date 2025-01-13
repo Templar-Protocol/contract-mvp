@@ -123,7 +123,7 @@ fn test_available_formula() {
 #[near(serializers = [json, borsh])]
 pub struct YieldWeights {
     pub supply: NonZeroU16,
-    pub r#static: HashMap<AccountId, NonZeroU16>,
+    pub r#static: HashMap<AccountId, u16>,
 }
 
 impl YieldWeights {
@@ -135,7 +135,7 @@ impl YieldWeights {
     }
 
     pub fn with_static(mut self, account_id: AccountId, weight: u16) -> Self {
-        self.r#static.insert(account_id, weight.try_into().unwrap());
+        self.r#static.insert(account_id, weight);
         self
     }
 

@@ -57,8 +57,7 @@ impl<T: AssetClass> YieldRecord<T> {
         }
     }
 
-    /// Returns the amount of yield remaining
-    pub fn withdraw(&mut self, amount: FungibleAssetAmount<T>) -> Option<FungibleAssetAmount<T>> {
+    pub fn withdraw(&mut self, amount: u128) -> Option<FungibleAssetAmount<T>> {
         self.amount.split(amount)
     }
 

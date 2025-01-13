@@ -3,6 +3,7 @@ pub mod borrow;
 pub mod fee;
 pub mod market;
 pub mod rational;
+pub mod static_yield;
 pub mod supply;
 pub mod util;
 pub mod withdrawal_queue;

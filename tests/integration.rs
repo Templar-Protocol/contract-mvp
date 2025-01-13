@@ -7,13 +7,15 @@ use near_workspaces::{
     network::Sandbox, prelude::TopLevelAccountCreator, Account, Contract, DevNetwork, Worker,
 };
 use templar_common::{
-    asset::FungibleAsset,
+    asset::{BorrowAssetAmount, CollateralAssetAmount, FungibleAsset},
     borrow::{BorrowPosition, BorrowStatus},
-    fee::{Fee, TimeBasedFee, TimeBasedFeeFunction},
+    fee::{Fee, TimeBasedFee},
     market::{MarketConfiguration, Nep141MarketDepositMessage, OraclePriceProof, YieldWeights},
     rational::Rational,
+    static_yield::StaticYieldRecord,
     supply::SupplyPosition,
 };
+use tokio::join;
 
 // ===== UTIL FUNCTIONS =====
 
@@ -38,6 +40,7 @@ fn market_configuration(
     borrow_asset_id: AccountId,
     collateral_asset_id: AccountId,
     liquidator_account_id: AccountId,
+    yield_weights: YieldWeights,
 ) -> MarketConfiguration {
     MarketConfiguration {
         borrow_asset: FungibleAsset::nep141(borrow_asset_id),
@@ -47,19 +50,13 @@ fn market_configuration(
         minimum_collateral_ratio_per_borrow: Rational::new(120, 100),
         maximum_borrow_asset_usage_ratio: Rational::new(99, 100),
         borrow_origination_fee: Fee::Proportional(Rational::new(10, 100)),
-        borrow_annual_maintenance_fee: Fee::Flat(0.into()),
+        borrow_annual_maintenance_fee: Fee::zero(),
         maximum_borrow_duration_ms: None,
         minimum_borrow_amount: 1.into(),
         maximum_borrow_amount: u128::MAX.into(),
         maximum_liquidator_spread: Rational::new(5, 100),
-        supply_withdrawal_fee: TimeBasedFee {
-            fee: Fee::Flat(0.into()),
-            duration: 0.into(),
-            behavior: TimeBasedFeeFunction::Fixed,
-        },
-        yield_weights: YieldWeights::new_with_supply_weight(8)
-            .with_static("protocol".parse().unwrap(), 1)
-            .with_static("insurance".parse().unwrap(), 1),
+        supply_withdrawal_fee: TimeBasedFee::zero(),
+        yield_weights,
     }
 }
 
@@ -331,6 +328,51 @@ impl TestController {
             .unwrap();
     }
 
+    async fn withdraw_static_yield(
+        &self,
+        account: &Account,
+        borrow_asset_amount: Option<BorrowAssetAmount>,
+        collateral_asset_amount: Option<CollateralAssetAmount>,
+    ) {
+        println!("{} withdrawing static yield...", account.id());
+        account
+            .call(self.contract.id(), "withdraw_static_yield")
+            .args_json(json!({
+                "borrow_asset_amount": borrow_asset_amount,
+                "collateral_asset_amount": collateral_asset_amount,
+            }))
+            .transact()
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    async fn withdraw_supply_yield(&self, supply_user: &Account, amount: Option<u128>) {
+        println!("{} withdrawing supply yield...", supply_user.id());
+        supply_user
+            .call(self.contract.id(), "withdraw_supply_yield")
+            .args_json(json!({
+                "amount": amount.map(U128),
+            }))
+            .transact()
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    async fn get_static_yield(&self, account_id: &AccountId) -> Option<StaticYieldRecord> {
+        self.contract
+            .view("get_static_yield")
+            .args_json(json!({
+                "account_id": account_id,
+            }))
+            .await
+            .unwrap()
+            .json::<Option<StaticYieldRecord>>()
+            .unwrap()
+    }
+
+    #[allow(unused)] // This is useful for debugging tests
     async fn print_logs(&self) {
         let total_borrow_asset_deposited_log = self
             .contract
@@ -376,6 +418,8 @@ async fn test_market_happy_path() {
         owner_user,
         supply_user,
         borrow_user,
+        protocol_yield_user,
+        insurance_yield_user,
         collateral_asset,
         borrow_asset
     );
@@ -385,6 +429,9 @@ async fn test_market_happy_path() {
             borrow_asset.id().clone(),
             collateral_asset.id().clone(),
             owner_user.id().clone(),
+            YieldWeights::new_with_supply_weight(8)
+                .with_static(protocol_yield_user.id().clone(), 1)
+                .with_static(insurance_yield_user.id().clone(), 1),
         ),
     )
     .await;
@@ -393,7 +440,7 @@ async fn test_market_happy_path() {
         "Borrow Asset",
         "BORROW",
         supply_user.id(),
-        1000,
+        100000,
     )
     .await;
     let collateral_asset = deploy_ft(
@@ -401,7 +448,7 @@ async fn test_market_happy_path() {
         "Collateral Asset",
         "COLLATERAL",
         borrow_user.id(),
-        1000,
+        100000,
     )
     .await;
 
@@ -416,6 +463,8 @@ async fn test_market_happy_path() {
         c.storage_deposits(c.contract.as_account()),
         c.storage_deposits(&borrow_user),
         c.storage_deposits(&supply_user),
+        c.storage_deposits(&protocol_yield_user),
+        c.storage_deposits(&insurance_yield_user),
     );
 
     let configuration = c.get_configuration().await;
@@ -434,13 +483,13 @@ async fn test_market_happy_path() {
     );
 
     // Step 1: Supply user sends tokens to contract to use for borrows.
-    c.supply(&supply_user, 100).await;
+    c.supply(&supply_user, 1000).await;
 
     let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
 
     assert_eq!(
         supply_position.get_borrow_asset_deposit().as_u128(),
-        100,
+        1000,
         "Supply position should match amount of tokens supplied to contract",
     );
 
@@ -454,13 +503,13 @@ async fn test_market_happy_path() {
 
     // Step 2: Borrow user deposits collateral
 
-    c.collateralize(&borrow_user, 200).await;
+    c.collateralize(&borrow_user, 2000).await;
 
     let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
 
     assert_eq!(
         borrow_position.collateral_asset_deposit.as_u128(),
-        200,
+        2000,
         "Collateral asset deposit should be equal to the number of collateral tokens sent",
     );
 
@@ -490,33 +539,33 @@ async fn test_market_happy_path() {
 
     // Step 3: Withdraw some of the borrow asset
 
-    // Borrowing 100 borrow tokens with 200 collateral tokens should be fine given equal price and MCR of 120%.
-    c.borrow(&borrow_user, 100, equal_price).await;
+    // Borrowing 1000 borrow tokens with 2000 collateral tokens should be fine given equal price and MCR of 120%.
+    c.borrow(&borrow_user, 1000, equal_price).await;
 
     let balance = c.borrow_asset_balance_of(borrow_user.id()).await;
 
-    assert_eq!(balance, 100, "Borrow user should receive assets");
+    assert_eq!(balance, 1000, "Borrow user should receive assets");
 
     let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
 
-    assert_eq!(borrow_position.collateral_asset_deposit.as_u128(), 200);
+    assert_eq!(borrow_position.collateral_asset_deposit.as_u128(), 2000);
     assert_eq!(
         borrow_position.get_total_borrow_asset_liability().as_u128(),
-        100 + 10
-    ); // origination fee
+        1000 + 100, // origination fee
+    );
 
     // Step 4: Repay borrow
 
     // Need extra to pay for origination fee.
-    c.borrow_asset_transfer(&supply_user, borrow_user.id(), 10)
+    c.borrow_asset_transfer(&supply_user, borrow_user.id(), 100)
         .await;
 
-    c.repay(&borrow_user, 110).await;
+    c.repay(&borrow_user, 1100).await;
 
     // Ensure borrow is paid off.
     let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
 
-    assert_eq!(borrow_position.collateral_asset_deposit.as_u128(), 200);
+    assert_eq!(borrow_position.collateral_asset_deposit.as_u128(), 2000);
     assert_eq!(
         borrow_position.get_total_borrow_asset_liability().as_u128(),
         0
@@ -525,6 +574,37 @@ async fn test_market_happy_path() {
     // Check yield for supply.
     c.harvest_yield(&supply_user).await;
     let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
-    // TODO: Divide yield among supply, liquidator, protocol, etc.
-    assert_eq!(supply_position.borrow_asset_yield.amount.as_u128(), 10);
+    assert_eq!(supply_position.borrow_asset_yield.amount.as_u128(), 80);
+
+    let balance_before = c.borrow_asset_balance_of(supply_user.id()).await;
+    // Withdraw all
+    c.withdraw_supply_yield(&supply_user, None).await;
+    let balance_after = c.borrow_asset_balance_of(supply_user.id()).await;
+
+    assert_eq!(
+        balance_after - balance_before,
+        supply_position.borrow_asset_yield.amount.as_u128(),
+    );
+
+    // Static yields should also have received some
+    join!(
+        async {
+            let protocol_yield = c.get_static_yield(protocol_yield_user.id()).await.unwrap();
+            assert_eq!(protocol_yield.borrow_asset.as_u128(), 10);
+            let balance_before = c.borrow_asset_balance_of(&protocol_yield_user.id()).await;
+            c.withdraw_static_yield(&protocol_yield_user, None, None)
+                .await;
+            let balance_after = c.borrow_asset_balance_of(&protocol_yield_user.id()).await;
+            assert_eq!(balance_after - balance_before, 10);
+        },
+        async {
+            let insurance_yield = c.get_static_yield(insurance_yield_user.id()).await.unwrap();
+            assert_eq!(insurance_yield.borrow_asset.as_u128(), 10);
+            let balance_before = c.borrow_asset_balance_of(&insurance_yield_user.id()).await;
+            c.withdraw_static_yield(&insurance_yield_user, None, None)
+                .await;
+            let balance_after = c.borrow_asset_balance_of(&insurance_yield_user.id()).await;
+            assert_eq!(balance_after - balance_before, 10);
+        },
+    );
 }

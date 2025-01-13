@@ -125,13 +125,19 @@ pub struct BorrowAsset;
 impl sealed::Sealed for BorrowAsset {}
 impl AssetClass for BorrowAsset {}
 
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
 #[serde(from = "U128", into = "U128")]
 pub struct FungibleAssetAmount<T: AssetClass> {
     amount: U128,
     #[borsh(skip)]
     discriminant: PhantomData<T>,
+}
+
+impl<T: AssetClass> Default for FungibleAssetAmount<T> {
+    fn default() -> Self {
+        Self::zero()
+    }
 }
 
 impl<T: AssetClass> From<U128> for FungibleAssetAmount<T> {
@@ -178,9 +184,10 @@ impl<T: AssetClass> FungibleAssetAmount<T> {
         self.amount.0
     }
 
-    pub fn split(&mut self, amount: Self) -> Option<Self> {
-        self.amount.0 = self.amount.0.checked_sub(amount.amount.0)?;
-        Some(amount)
+    pub fn split(&mut self, amount: impl Into<Self>) -> Option<Self> {
+        let a = amount.into();
+        self.amount.0 = self.amount.0.checked_sub(a.amount.0)?;
+        Some(a)
     }
 
     pub fn join(&mut self, other: Self) -> Option<()> {

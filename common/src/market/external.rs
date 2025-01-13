@@ -1,10 +1,12 @@
 use near_sdk::{
     json_types::{U128, U64},
-    AccountId, PromiseOrValue,
+    AccountId, Promise, PromiseOrValue,
 };
 
 use crate::{
+    asset::{BorrowAssetAmount, CollateralAssetAmount},
     borrow::{BorrowPosition, BorrowStatus},
+    static_yield::StaticYieldRecord,
     supply::SupplyPosition,
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
 };
@@ -90,8 +92,11 @@ pub trait MarketExternalInterface {
     // =================
     // YIELD FUNCTIONS
     // =================
-    fn withdraw_supply_yield(&mut self, amount: U128);
-    fn withdraw_liquidator_yield(&mut self, amount: U128);
-    fn withdraw_protocol_yield(&mut self, amount: U128);
-    // fn withdraw_insurance_yield(&mut self, amount: U128);
+    fn get_static_yield(&self, account_id: AccountId) -> Option<StaticYieldRecord>;
+    fn withdraw_supply_yield(&mut self, amount: Option<U128>) -> Promise;
+    fn withdraw_static_yield(
+        &mut self,
+        borrow_asset_amount: Option<BorrowAssetAmount>,
+        collateral_asset_amount: Option<CollateralAssetAmount>,
+    ) -> Promise;
 }

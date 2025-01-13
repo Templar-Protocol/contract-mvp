@@ -1,5 +1,5 @@
 use near_sdk::{
-    collections::{TreeMap, UnorderedMap},
+    collections::{LookupMap, TreeMap, UnorderedMap},
     env, near, require, AccountId, BorshStorageKey, IntoStorageKey,
 };
 
@@ -8,6 +8,7 @@ use crate::{
     borrow::BorrowPosition,
     market::MarketConfiguration,
     rational::Rational,
+    static_yield::StaticYieldRecord,
     supply::SupplyPosition,
     withdrawal_queue::WithdrawalQueue,
 };
@@ -22,6 +23,7 @@ enum StorageKey {
     TotalBorrowAssetDepositedLog,
     BorrowAssetYieldDistributionLog,
     WithdrawalQueue,
+    StaticYield,
 }
 
 #[near]
@@ -34,6 +36,7 @@ pub struct Market {
     pub total_borrow_asset_deposited_log: TreeMap<u64, BorrowAssetAmount>,
     pub borrow_asset_yield_distribution_log: TreeMap<u64, BorrowAssetAmount>,
     pub withdrawal_queue: WithdrawalQueue,
+    pub static_yield: LookupMap<AccountId, StaticYieldRecord>,
 }
 
 impl Market {
@@ -59,6 +62,7 @@ impl Market {
                 BorrowAssetYieldDistributionLog
             )),
             withdrawal_queue: WithdrawalQueue::new(key!(WithdrawalQueue)),
+            static_yield: LookupMap::new(key!(StaticYield)),
         }
     }
 
@@ -102,7 +106,29 @@ impl Market {
             .insert(&block_height, &amount);
     }
 
-    fn record_borrow_asset_yield_distribution(&mut self, amount: BorrowAssetAmount) {
+    fn record_borrow_asset_yield_distribution(&mut self, mut amount: BorrowAssetAmount) {
+        // First, static yield.
+        // TODO: Lots of `.unwrap()`s in this section.
+
+        let total_weight = u16::from(self.configuration.yield_weights.total_weight()) as u128;
+        let total_amount = amount.as_u128();
+        for (account_id, share) in self.configuration.yield_weights.r#static.iter() {
+            let portion = amount
+                .split(
+                    total_amount
+                        .checked_mul(*share as u128)
+                        .and_then(|x| x.checked_div(total_weight))
+                        .unwrap(),
+                )
+                .unwrap();
+
+            let mut yield_record = self.static_yield.get(account_id).unwrap_or_default();
+            yield_record.borrow_asset.join(portion).unwrap();
+            self.static_yield.insert(account_id, &yield_record);
+        }
+
+        // Next, dynamic (supply-based) yield.
+
         let block_height = env::block_height();
         let mut distributed_in_block = self
             .borrow_asset_yield_distribution_log
