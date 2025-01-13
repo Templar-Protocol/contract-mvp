@@ -7,7 +7,7 @@ use crate::{
     rational::Rational,
 };
 
-use super::{LiquidationSpread, OraclePriceProof};
+use super::{OraclePriceProof, YieldWeights};
 
 #[derive(Clone, Debug)]
 #[near(serializers = [json, borsh])]
@@ -31,7 +31,14 @@ pub struct MarketConfiguration {
     pub minimum_borrow_amount: BorrowAssetAmount,
     pub maximum_borrow_amount: BorrowAssetAmount,
     pub withdrawal_fee: TimeBasedFee<CollateralAsset>,
-    pub liquidation_spread: LiquidationSpread,
+    pub yield_weights: YieldWeights,
+    /// How far below market rate to accept liquidation? This is effectively the liquidator's spread.
+    ///
+    /// For example, if a 100USDC borrow is (under)collateralized with $110 of
+    /// NEAR, a "maximum liquidator spread" of 10% would mean that a liquidator
+    /// could liquidate this borrow by sending 109USDC, netting the liquidator
+    /// ($110 - $100) * 10% = $1 of NEAR.
+    pub maximum_liquidator_spread: Rational<u16>,
     // TODO: how much below market rate to accept? For liquidator spread.
 }
 
@@ -62,7 +69,7 @@ mod tests {
     use crate::{
         asset::FungibleAsset,
         fee::{Fee, TimeBasedFee, TimeBasedFeeFunction},
-        market::{LiquidationSpread, MarketConfiguration},
+        market::{MarketConfiguration, YieldWeights},
         rational::Rational,
     };
 
@@ -90,11 +97,12 @@ mod tests {
                     duration: 0.into(),
                     behavior: TimeBasedFeeFunction::Fixed,
                 },
-                liquidation_spread: LiquidationSpread {
-                    supply_position: 6.into(),
-                    liquidator: 1.into(),
+                yield_weights: YieldWeights {
+                    supply: 6.into(),
                     protocol: 1.into(),
+                    insurance: 1.into(),
                 },
+                maximum_liquidator_spread: Rational::new(5, 100),
             })
             .unwrap()
         );

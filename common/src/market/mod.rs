@@ -119,11 +119,10 @@ fn test_available_formula() {
 
 #[derive(Clone, Debug)]
 #[near(serializers = [json, borsh])]
-pub struct LiquidationSpread {
-    pub supply_position: U128,
-    pub liquidator: U128,
+pub struct YieldWeights {
+    pub supply: U128,
     pub protocol: U128,
-    // pub insurance: U128,
+    pub insurance: U128,
 }
 
 #[near(serializers = [json])]

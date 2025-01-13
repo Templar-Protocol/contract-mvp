@@ -345,20 +345,20 @@ impl MarketExternalInterface for Contract {
     fn harvest_yield(&mut self) {
         let predecessor = env::predecessor_account_id();
         if let Some(mut supply_position) = self.supply_positions.get(&predecessor) {
-            self.accumulate_rewards_on_supply_position(&mut supply_position, env::block_height());
+            self.accumulate_yield_on_supply_position(&mut supply_position, env::block_height());
             self.supply_positions.insert(&predecessor, &supply_position);
         }
     }
 
-    fn withdraw_supply_position_rewards(&mut self, amount: U128) {
+    fn withdraw_supply_yield(&mut self, amount: U128) {
         todo!()
     }
 
-    fn withdraw_liquidator_rewards(&mut self, amount: U128) {
+    fn withdraw_liquidator_yield(&mut self, amount: U128) {
         todo!()
     }
 
-    fn withdraw_protocol_rewards(&mut self, amount: U128) {
+    fn withdraw_protocol_yield(&mut self, amount: U128) {
         todo!()
     }
 }
@@ -372,8 +372,8 @@ impl Contract {
             .collect::<Vec<_>>()
     }
 
-    pub fn get_borrow_asset_reward_distribution_log(&self) -> Vec<(U64, U128)> {
-        self.borrow_asset_reward_distribution_log
+    pub fn get_borrow_asset_yield_distribution_log(&self) -> Vec<(U64, U128)> {
+        self.borrow_asset_yield_distribution_log
             .iter()
             .map(|(block_height, total)| (block_height.into(), total.as_u128().into()))
             .collect::<Vec<_>>()

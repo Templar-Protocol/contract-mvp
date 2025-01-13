@@ -10,9 +10,7 @@ use templar_common::{
     asset::FungibleAsset,
     borrow::{BorrowPosition, BorrowStatus},
     fee::{Fee, TimeBasedFee, TimeBasedFeeFunction},
-    market::{
-        LiquidationSpread, MarketConfiguration, Nep141MarketDepositMessage, OraclePriceProof,
-    },
+    market::{MarketConfiguration, Nep141MarketDepositMessage, OraclePriceProof, YieldWeights},
     rational::Rational,
     supply::SupplyPosition,
 };
@@ -53,14 +51,15 @@ fn market_configuration(
         maximum_borrow_duration: None,
         minimum_borrow_amount: 1.into(),
         maximum_borrow_amount: u128::MAX.into(),
+        maximum_liquidator_spread: Rational::new(5, 100),
         withdrawal_fee: TimeBasedFee {
             fee: Fee::Flat(0.into()),
             duration: 0.into(),
             behavior: TimeBasedFeeFunction::Fixed,
         },
-        liquidation_spread: LiquidationSpread {
-            supply_position: 8.into(),
-            liquidator: 1.into(),
+        yield_weights: YieldWeights {
+            supply: 8.into(),
+            insurance: 1.into(),
             protocol: 1.into(),
         },
     }
@@ -351,18 +350,18 @@ impl TestController {
             println!("\t{i}: {amount}\t[#{block_height}]");
         }
 
-        let borrow_asset_reward_distribution_log = self
+        let borrow_asset_yield_distribution_log = self
             .contract
-            .view("get_borrow_asset_reward_distribution_log")
+            .view("get_borrow_asset_yield_distribution_log")
             .args_json(json!({}))
             .await
             .unwrap()
             .json::<Vec<(U64, U128)>>()
             .unwrap();
 
-        println!("Borrow asset reward distribution log:");
+        println!("Borrow asset yield distribution log:");
         for (i, (U64(block_height), U128(amount))) in
-            borrow_asset_reward_distribution_log.iter().enumerate()
+            borrow_asset_yield_distribution_log.iter().enumerate()
         {
             println!("\t{i}: {amount}\t[#{block_height}]");
         }
@@ -525,9 +524,9 @@ async fn test_market_happy_path() {
         0
     );
 
-    // Check rewards for supply.
+    // Check yield for supply.
     c.harvest_yield(&supply_user).await;
     let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
-    // TODO: Divide rewards among supply, liquidator, protocol, etc.
-    assert_eq!(supply_position.borrow_asset_rewards.amount.as_u128(), 10);
+    // TODO: Divide yield among supply, liquidator, protocol, etc.
+    assert_eq!(supply_position.borrow_asset_yield.amount.as_u128(), 10);
 }

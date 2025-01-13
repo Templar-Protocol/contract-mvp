@@ -88,10 +88,10 @@ pub trait MarketExternalInterface {
     fn harvest_yield(&mut self);
 
     // =================
-    // REWARDS FUNCTIONS
+    // YIELD FUNCTIONS
     // =================
-    fn withdraw_supply_position_rewards(&mut self, amount: U128);
-    fn withdraw_liquidator_rewards(&mut self, amount: U128);
-    fn withdraw_protocol_rewards(&mut self, amount: U128);
-    // fn withdraw_insurance_rewards(&mut self, amount: U128);
+    fn withdraw_supply_yield(&mut self, amount: U128);
+    fn withdraw_liquidator_yield(&mut self, amount: U128);
+    fn withdraw_protocol_yield(&mut self, amount: U128);
+    // fn withdraw_insurance_yield(&mut self, amount: U128);
 }

@@ -20,7 +20,7 @@ enum StorageKey {
     SupplyPositions,
     BorrowPositions,
     TotalBorrowAssetDepositedLog,
-    BorrowAssetRewardDistributionLog,
+    BorrowAssetYieldDistributionLog,
     WithdrawalQueue,
 }
 
@@ -32,7 +32,7 @@ pub struct Market {
     pub supply_positions: UnorderedMap<AccountId, SupplyPosition>,
     pub borrow_positions: UnorderedMap<AccountId, BorrowPosition>,
     pub total_borrow_asset_deposited_log: TreeMap<u64, BorrowAssetAmount>,
-    pub borrow_asset_reward_distribution_log: TreeMap<u64, BorrowAssetAmount>,
+    pub borrow_asset_yield_distribution_log: TreeMap<u64, BorrowAssetAmount>,
     pub withdrawal_queue: WithdrawalQueue,
 }
 
@@ -55,8 +55,8 @@ impl Market {
             supply_positions: UnorderedMap::new(key!(SupplyPositions)),
             borrow_positions: UnorderedMap::new(key!(BorrowPositions)),
             total_borrow_asset_deposited_log: TreeMap::new(key!(TotalBorrowAssetDepositedLog)),
-            borrow_asset_reward_distribution_log: TreeMap::new(key!(
-                BorrowAssetRewardDistributionLog
+            borrow_asset_yield_distribution_log: TreeMap::new(key!(
+                BorrowAssetYieldDistributionLog
             )),
             withdrawal_queue: WithdrawalQueue::new(key!(WithdrawalQueue)),
         }
@@ -66,7 +66,6 @@ impl Market {
         &mut self,
     ) -> Result<Option<(AccountId, BorrowAssetAmount)>, ()> {
         let Some((account_id, requested_amount)) = self.withdrawal_queue.try_lock() else {
-            // "Could not lock withdrawal queue. The queue may be empty or a withdrawal may be in-flight."
             return Err(());
         };
 
@@ -86,7 +85,6 @@ impl Market {
                     }
                 })
         else {
-            // env::log_str("Supply position does not exist: skipping.");
             self.withdrawal_queue
                 .try_pop()
                 .unwrap_or_else(|| env::panic_str("Inconsistent state")); // we just locked the queue
@@ -104,14 +102,14 @@ impl Market {
             .insert(&block_height, &amount);
     }
 
-    fn record_borrow_asset_reward_distribution(&mut self, amount: BorrowAssetAmount) {
+    fn record_borrow_asset_yield_distribution(&mut self, amount: BorrowAssetAmount) {
         let block_height = env::block_height();
         let mut distributed_in_block = self
-            .borrow_asset_reward_distribution_log
+            .borrow_asset_yield_distribution_log
             .get(&block_height)
             .unwrap_or(0.into());
         distributed_in_block.join(amount);
-        self.borrow_asset_reward_distribution_log
+        self.borrow_asset_yield_distribution_log
             .insert(&block_height, &distributed_in_block);
     }
 
@@ -120,7 +118,7 @@ impl Market {
         supply_position: &mut SupplyPosition,
         amount: BorrowAssetAmount,
     ) {
-        self.accumulate_rewards_on_supply_position(supply_position, env::block_height());
+        self.accumulate_yield_on_supply_position(supply_position, env::block_height());
         supply_position
             .increase_borrow_asset_deposit(amount)
             .unwrap_or_else(|| env::panic_str("Supply position borrow asset overflow"));
@@ -137,7 +135,7 @@ impl Market {
         supply_position: &mut SupplyPosition,
         amount: BorrowAssetAmount,
     ) -> BorrowAssetAmount {
-        self.accumulate_rewards_on_supply_position(supply_position, env::block_height());
+        self.accumulate_yield_on_supply_position(supply_position, env::block_height());
         let withdrawn = supply_position
             .decrease_borrow_asset_deposit(amount)
             .unwrap_or_else(|| env::panic_str("Supply position borrow asset underflow"));
@@ -197,23 +195,23 @@ impl Market {
             "Overpayment not supported",
         );
 
-        self.record_borrow_asset_reward_distribution(liability_reduction.amount_to_fees);
+        self.record_borrow_asset_yield_distribution(liability_reduction.amount_to_fees);
     }
 
-    /// In order for rewards calculations to be accurate, this function MUST
+    /// In order for yield calculations to be accurate, this function MUST
     /// BE CALLED every time a supply position's deposit changes. This
     /// requirement is largely met by virtue of the fact that
     /// `SupplyPosition->borrow_asset_deposit` is a private field and can only
     /// be modified via `Self::record_supply_position_*` methods.
-    pub fn accumulate_rewards_on_supply_position(
+    pub fn accumulate_yield_on_supply_position(
         &self,
         supply_position: &mut SupplyPosition,
         until_block_height: u64,
     ) {
-        let (accumulated, last_block_height) = self.calculate_supply_position_rewards(
-            &self.borrow_asset_reward_distribution_log,
+        let (accumulated, last_block_height) = self.calculate_supply_position_yield(
+            &self.borrow_asset_yield_distribution_log,
             supply_position
-                .borrow_asset_rewards
+                .borrow_asset_yield
                 .last_updated_block_height
                 .0,
             supply_position.get_borrow_asset_deposit(),
@@ -221,18 +219,18 @@ impl Market {
         );
 
         supply_position
-            .borrow_asset_rewards
-            .accumulate_rewards(accumulated, last_block_height);
+            .borrow_asset_yield
+            .accumulate_yield(accumulated, last_block_height);
     }
 
-    pub fn calculate_supply_position_rewards<T: AssetClass>(
+    pub fn calculate_supply_position_yield<T: AssetClass>(
         &self,
-        reward_distribution_log: &TreeMap<u64, FungibleAssetAmount<T>>,
+        yield_distribution_log: &TreeMap<u64, FungibleAssetAmount<T>>,
         last_updated_block_height: u64,
         borrow_asset_deposited_during_interval: BorrowAssetAmount,
         until_block_height: u64,
     ) -> (FungibleAssetAmount<T>, u64) {
-        let start_from_block_height = reward_distribution_log
+        let start_from_block_height = yield_distribution_log
             .floor_key(&last_updated_block_height)
             .map(|i| i - 1) // -1 because TreeMap::iter_from start is _exclusive_
             .unwrap_or(0);
@@ -240,7 +238,7 @@ impl Market {
         // We explicitly want to _exclude_ `until_block_height` because the
         // intended use of this method is that it will be
         // `env::block_height()`, and in this case, it would be possible for us
-        // to miss some rewards if they were distributed in the same block but
+        // to miss some yield if they were distributed in the same block but
         // after this function call.
         if start_from_block_height >= until_block_height {
             return (0.into(), last_updated_block_height);
@@ -249,7 +247,7 @@ impl Market {
         let mut accumulated_fees_in_span = FungibleAssetAmount::<T>::zero();
         let mut last_block_height = start_from_block_height;
 
-        for (block_height, fees) in reward_distribution_log.iter_from(start_from_block_height) {
+        for (block_height, fees) in yield_distribution_log.iter_from(start_from_block_height) {
             if block_height >= until_block_height {
                 break;
             }
@@ -307,8 +305,8 @@ impl Market {
             .split(borrow_position.get_borrow_asset_principal())
             .is_some()
         {
-            // distribute rewards
-            self.record_borrow_asset_reward_distribution(recovered_amount);
+            // distribute yield
+            self.record_borrow_asset_yield_distribution(recovered_amount);
         } else {
             // we took a loss
             // TODO: some sort of recovery for suppliers

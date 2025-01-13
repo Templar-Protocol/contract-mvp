@@ -6,14 +6,14 @@ use crate::asset::{AssetClass, BorrowAsset, BorrowAssetAmount, FungibleAssetAmou
 #[near(serializers = [json, borsh])]
 pub struct SupplyPosition {
     borrow_asset_deposit: BorrowAssetAmount,
-    pub borrow_asset_rewards: RewardRecord<BorrowAsset>,
+    pub borrow_asset_yield: YieldRecord<BorrowAsset>,
 }
 
 impl SupplyPosition {
     pub fn new(block_height: u64) -> Self {
         Self {
             borrow_asset_deposit: 0.into(),
-            borrow_asset_rewards: RewardRecord::new(block_height),
+            borrow_asset_yield: YieldRecord::new(block_height),
         }
     }
 
@@ -22,10 +22,10 @@ impl SupplyPosition {
     }
 
     pub fn exists(&self) -> bool {
-        !self.borrow_asset_deposit.is_zero() || !self.borrow_asset_rewards.amount.is_zero()
+        !self.borrow_asset_deposit.is_zero() || !self.borrow_asset_yield.amount.is_zero()
     }
 
-    /// MUST always be paired with a rewards recalculation!
+    /// MUST always be paired with a yield recalculation!
     pub(crate) fn increase_borrow_asset_deposit(
         &mut self,
         amount: BorrowAssetAmount,
@@ -33,7 +33,7 @@ impl SupplyPosition {
         self.borrow_asset_deposit.join(amount)
     }
 
-    /// MUST always be paired with a rewards recalculation!
+    /// MUST always be paired with a yield recalculation!
     pub(crate) fn decrease_borrow_asset_deposit(
         &mut self,
         amount: BorrowAssetAmount,
@@ -44,12 +44,12 @@ impl SupplyPosition {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
-pub struct RewardRecord<T: AssetClass> {
+pub struct YieldRecord<T: AssetClass> {
     pub amount: FungibleAssetAmount<T>,
     pub last_updated_block_height: U64,
 }
 
-impl<T: AssetClass> RewardRecord<T> {
+impl<T: AssetClass> YieldRecord<T> {
     pub fn new(block_height: u64) -> Self {
         Self {
             amount: 0.into(),
@@ -57,18 +57,18 @@ impl<T: AssetClass> RewardRecord<T> {
         }
     }
 
-    /// Returns the amount of rewards remaining
+    /// Returns the amount of yield remaining
     pub fn withdraw(&mut self, amount: FungibleAssetAmount<T>) -> Option<FungibleAssetAmount<T>> {
         self.amount.split(amount)
     }
 
-    pub fn accumulate_rewards(
+    pub fn accumulate_yield(
         &mut self,
-        additional_rewards: FungibleAssetAmount<T>,
+        additional_yield: FungibleAssetAmount<T>,
         block_height: u64,
     ) {
         debug_assert!(block_height > self.last_updated_block_height.0);
-        self.amount.join(additional_rewards);
+        self.amount.join(additional_yield);
         self.last_updated_block_height.0 = block_height;
     }
 }
