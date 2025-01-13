@@ -48,20 +48,18 @@ fn market_configuration(
         maximum_borrow_asset_usage_ratio: Rational::new(99, 100),
         borrow_origination_fee: Fee::Proportional(Rational::new(10, 100)),
         borrow_annual_maintenance_fee: Fee::Flat(0.into()),
-        maximum_borrow_duration: None,
+        maximum_borrow_duration_ms: None,
         minimum_borrow_amount: 1.into(),
         maximum_borrow_amount: u128::MAX.into(),
         maximum_liquidator_spread: Rational::new(5, 100),
-        withdrawal_fee: TimeBasedFee {
+        supply_withdrawal_fee: TimeBasedFee {
             fee: Fee::Flat(0.into()),
             duration: 0.into(),
             behavior: TimeBasedFeeFunction::Fixed,
         },
-        yield_weights: YieldWeights {
-            supply: 8.into(),
-            insurance: 1.into(),
-            protocol: 1.into(),
-        },
+        yield_weights: YieldWeights::new_with_supply_weight(8)
+            .with_static("protocol".parse().unwrap(), 1)
+            .with_static("insurance".parse().unwrap(), 1),
     }
 }
 

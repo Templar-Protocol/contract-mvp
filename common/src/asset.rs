@@ -127,11 +127,26 @@ impl AssetClass for BorrowAsset {}
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
+#[serde(from = "U128", into = "U128")]
 pub struct FungibleAssetAmount<T: AssetClass> {
     amount: U128,
-    #[serde(skip)]
     #[borsh(skip)]
     discriminant: PhantomData<T>,
+}
+
+impl<T: AssetClass> From<U128> for FungibleAssetAmount<T> {
+    fn from(amount: U128) -> Self {
+        Self {
+            amount,
+            discriminant: PhantomData,
+        }
+    }
+}
+
+impl<T: AssetClass> From<FungibleAssetAmount<T>> for U128 {
+    fn from(value: FungibleAssetAmount<T>) -> Self {
+        value.amount
+    }
 }
 
 impl<T: AssetClass> From<u128> for FungibleAssetAmount<T> {
@@ -176,3 +191,18 @@ impl<T: AssetClass> FungibleAssetAmount<T> {
 
 pub type BorrowAssetAmount = FungibleAssetAmount<BorrowAsset>;
 pub type CollateralAssetAmount = FungibleAssetAmount<CollateralAsset>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use near_sdk::serde_json;
+
+    #[test]
+    fn serialization() {
+        let amount = BorrowAssetAmount::new(100);
+        let serialized = serde_json::to_string(&amount).unwrap();
+        assert_eq!(serialized, "\"100\"");
+        let deserialized: BorrowAssetAmount = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized, amount);
+    }
+}

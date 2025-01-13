@@ -13,6 +13,10 @@ pub enum Fee<T: AssetClass> {
 }
 
 impl<T: AssetClass> Fee<T> {
+    pub fn zero() -> Self {
+        Self::Flat(FungibleAssetAmount::zero())
+    }
+
     pub fn of(&self, amount: FungibleAssetAmount<T>) -> Option<FungibleAssetAmount<T>> {
         match self {
             Fee::Flat(f) => Some(f.clone()),
@@ -31,6 +35,16 @@ pub struct TimeBasedFee<T: AssetClass> {
     pub fee: Fee<T>,
     pub duration: U64,
     pub behavior: TimeBasedFeeFunction,
+}
+
+impl<T: AssetClass> TimeBasedFee<T> {
+    pub fn zero() -> Self {
+        Self {
+            fee: Fee::Flat(0.into()),
+            duration: 0.into(),
+            behavior: TimeBasedFeeFunction::Fixed,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
