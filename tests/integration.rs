@@ -14,6 +14,7 @@ use templar_common::{
     rational::Rational,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
+    withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
 };
 use tokio::join;
 
@@ -258,6 +259,19 @@ impl TestController {
             .unwrap();
     }
 
+    async fn collateral_asset_balance_of(&self, account_id: &AccountId) -> u128 {
+        self.collateral_asset
+            .view("ft_balance_of")
+            .args_json(json!({
+                "account_id": account_id,
+            }))
+            .await
+            .unwrap()
+            .json::<U128>()
+            .unwrap()
+            .0
+    }
+
     async fn borrow_asset_balance_of(&self, account_id: &AccountId) -> u128 {
         self.borrow_asset
             .view("ft_balance_of")
@@ -370,6 +384,80 @@ impl TestController {
             .unwrap()
             .json::<Option<StaticYieldRecord>>()
             .unwrap()
+    }
+
+    async fn withdraw_collateral(
+        &self,
+        borrow_user: &Account,
+        amount: u128,
+        price: Option<OraclePriceProof>,
+    ) {
+        println!("{} withdrawing {amount} collateral...", borrow_user.id());
+        borrow_user
+            .call(self.contract.id(), "withdraw_collateral")
+            .args_json(json!({
+                "amount": U128(amount),
+                "oracle_price_proof": price,
+            }))
+            .transact()
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    async fn create_supply_withdrawal_request(&self, supply_user: &Account, amount: u128) {
+        println!(
+            "{} creating supply withdrawal request for {amount}...",
+            supply_user.id()
+        );
+        supply_user
+            .call(self.contract.id(), "create_supply_withdrawal_request")
+            .args_json(json!({
+                "amount": U128(amount),
+            }))
+            .transact()
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    async fn get_supply_withdrawal_request_status(
+        &self,
+        account_id: &AccountId,
+    ) -> Option<WithdrawalRequestStatus> {
+        self.contract
+            .view("get_supply_withdrawal_request_status")
+            .args_json(json!({
+                "account_id": account_id,
+            }))
+            .await
+            .unwrap()
+            .json::<Option<WithdrawalRequestStatus>>()
+            .unwrap()
+    }
+
+    async fn get_supply_withdrawal_queue_status(&self) -> WithdrawalQueueStatus {
+        self.contract
+            .view("get_supply_withdrawal_queue_status")
+            .args_json(json!({}))
+            .await
+            .unwrap()
+            .json::<WithdrawalQueueStatus>()
+            .unwrap()
+    }
+
+    async fn execute_next_supply_withdrawal_request(&self, account: &Account) {
+        println!(
+            "{} executing next supply withdrawal request...",
+            account.id(),
+        );
+        account
+            .call(self.contract.id(), "execute_next_supply_withdrawal_request")
+            .args_json(json!({}))
+            .transact()
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[allow(unused)] // This is useful for debugging tests
@@ -571,23 +659,75 @@ async fn test_market_happy_path() {
         0
     );
 
-    // Check yield for supply.
-    c.harvest_yield(&supply_user).await;
-    let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
-    assert_eq!(supply_position.borrow_asset_yield.amount.as_u128(), 80);
-
-    let balance_before = c.borrow_asset_balance_of(supply_user.id()).await;
-    // Withdraw all
-    c.withdraw_supply_yield(&supply_user, None).await;
-    let balance_after = c.borrow_asset_balance_of(supply_user.id()).await;
-
-    assert_eq!(
-        balance_after - balance_before,
-        supply_position.borrow_asset_yield.amount.as_u128(),
-    );
-
-    // Static yields should also have received some
     join!(
+        // Supply withdrawals.
+        async {
+            // Withdraw yield.
+            {
+                c.harvest_yield(&supply_user).await;
+                let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
+                assert_eq!(supply_position.borrow_asset_yield.amount.as_u128(), 80);
+
+                let balance_before = c.borrow_asset_balance_of(supply_user.id()).await;
+                // Withdraw all
+                c.withdraw_supply_yield(&supply_user, None).await;
+                let balance_after = c.borrow_asset_balance_of(supply_user.id()).await;
+
+                assert_eq!(
+                    balance_after - balance_before,
+                    supply_position.borrow_asset_yield.amount.as_u128(),
+                );
+            }
+
+            // Withdraw supply.
+            {
+                // Queue should be empty at first.
+                let request_status = c
+                    .get_supply_withdrawal_request_status(supply_user.id())
+                    .await;
+                assert!(
+                    request_status.is_none(),
+                    "Supply user should not be enqueued yet.",
+                );
+                let queue_status = c.get_supply_withdrawal_queue_status().await;
+                assert!(queue_status.depth.is_zero());
+                assert_eq!(queue_status.length, 0);
+
+                let balance_before = c.borrow_asset_balance_of(supply_user.id()).await;
+                c.create_supply_withdrawal_request(&supply_user, 1000).await;
+
+                // Queue should have 1 request now.
+                let request_status = c
+                    .get_supply_withdrawal_request_status(supply_user.id())
+                    .await
+                    .expect("Should be enqueued now");
+                assert_eq!(request_status.amount.as_u128(), 1000);
+                assert_eq!(request_status.depth.as_u128(), 0);
+                assert_eq!(request_status.index, 0);
+                let queue_status = c.get_supply_withdrawal_queue_status().await;
+                assert_eq!(queue_status.depth.as_u128(), 1000);
+                assert_eq!(queue_status.length, 1);
+
+                c.execute_next_supply_withdrawal_request(&supply_user).await;
+
+                // Check the queue is empty again.
+                let request_status = c
+                    .get_supply_withdrawal_request_status(supply_user.id())
+                    .await;
+                assert!(
+                    request_status.is_none(),
+                    "Supply user should not be enqueued yet.",
+                );
+                let queue_status = c.get_supply_withdrawal_queue_status().await;
+                assert!(queue_status.depth.is_zero());
+                assert_eq!(queue_status.length, 0);
+
+                let balance_after = c.borrow_asset_balance_of(supply_user.id()).await;
+
+                assert_eq!(balance_after - balance_before, 1000);
+            }
+        },
+        // Protocol yield.
         async {
             let protocol_yield = c.get_static_yield(protocol_yield_user.id()).await.unwrap();
             assert_eq!(protocol_yield.borrow_asset.as_u128(), 10);
@@ -597,6 +737,7 @@ async fn test_market_happy_path() {
             let balance_after = c.borrow_asset_balance_of(&protocol_yield_user.id()).await;
             assert_eq!(balance_after - balance_before, 10);
         },
+        // Insurance yield.
         async {
             let insurance_yield = c.get_static_yield(insurance_yield_user.id()).await.unwrap();
             assert_eq!(insurance_yield.borrow_asset.as_u128(), 10);
@@ -605,6 +746,15 @@ async fn test_market_happy_path() {
                 .await;
             let balance_after = c.borrow_asset_balance_of(&insurance_yield_user.id()).await;
             assert_eq!(balance_after - balance_before, 10);
+        },
+        // Borrower withdraws collateral.
+        async {
+            let balance_before = c.collateral_asset_balance_of(borrow_user.id()).await;
+            c.withdraw_collateral(&borrow_user, 2000, None).await;
+            let balance_after = c.collateral_asset_balance_of(borrow_user.id()).await;
+            assert_eq!(balance_after - balance_before, 2000);
+            let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
+            assert!(!borrow_position.exists());
         },
     );
 }

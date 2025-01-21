@@ -64,7 +64,12 @@ pub trait MarketExternalInterface {
     ) -> String;
 
     fn initialize_borrow(&mut self, borrow_asset_amount: U128, collateral_asset_amount: U128);
-    fn borrow(&mut self, amount: U128, oracle_price_proof: OraclePriceProof) -> PromiseOrValue<()>;
+    fn borrow(&mut self, amount: U128, oracle_price_proof: OraclePriceProof) -> Promise;
+    fn withdraw_collateral(
+        &mut self,
+        amount: U128,
+        oracle_price_proof: Option<OraclePriceProof>,
+    ) -> Promise;
 
     // ================
     // SUPPLY FUNCTIONS

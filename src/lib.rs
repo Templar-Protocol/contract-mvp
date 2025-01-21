@@ -8,7 +8,7 @@ use near_sdk::{
     env,
     json_types::{U128, U64},
     near, require, serde_json, AccountId, BorshStorageKey, PanicOnDefault, Promise, PromiseError,
-    PromiseOrValue,
+    PromiseOrValue, PromiseResult,
 };
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
@@ -245,7 +245,7 @@ impl MarketExternalInterface for Contract {
         todo!()
     }
 
-    fn borrow(&mut self, amount: U128, oracle_price_proof: OraclePriceProof) -> PromiseOrValue<()> {
+    fn borrow(&mut self, amount: U128, oracle_price_proof: OraclePriceProof) -> Promise {
         let amount = BorrowAssetAmount::new(amount.0);
 
         require!(!amount.is_zero(), "Borrow amount must be greater than zero");
@@ -272,12 +272,43 @@ impl MarketExternalInterface for Contract {
 
         self.borrow_positions.insert(&account_id, &borrow_position);
 
-        PromiseOrValue::Promise(
-            self.configuration
-                .borrow_asset
-                .transfer(account_id, amount)
-                .then(Self::ext(env::current_account_id()).return_static(serde_json::Value::Null)),
-        )
+        self.configuration
+            .borrow_asset
+            .transfer(account_id, amount) // TODO: Check for failure
+            .then(Self::ext(env::current_account_id()).return_static(serde_json::Value::Null))
+    }
+
+    fn withdraw_collateral(
+        &mut self,
+        amount: U128,
+        oracle_price_proof: Option<OraclePriceProof>,
+    ) -> Promise {
+        let amount = CollateralAssetAmount::new(amount.0);
+
+        let account_id = env::predecessor_account_id();
+
+        let Some(mut borrow_position) = self.borrow_positions.get(&account_id) else {
+            env::panic_str("No borrower record. Please deposit collateral first.");
+        };
+
+        self.record_borrow_position_collateral_asset_withdrawal(&mut borrow_position, amount);
+
+        if !borrow_position.get_total_borrow_asset_liability().is_zero() {
+            require!(
+                self.configuration.is_healthy(
+                    &borrow_position,
+                    oracle_price_proof.unwrap_or_else(|| env::panic_str("Must provide price"))
+                ),
+                "Borrow must still be above MCR after collateral withdrawal.",
+            )
+        }
+
+        self.borrow_positions.insert(&account_id, &borrow_position);
+
+        self.configuration
+            .collateral_asset
+            .transfer(account_id, amount) // TODO: Check for failure
+            .then(Self::ext(env::current_account_id()).return_static(serde_json::Value::Null))
     }
 
     fn get_supply_position(&self, account_id: AccountId) -> Option<SupplyPosition> {
@@ -463,14 +494,12 @@ impl Contract {
     }
 
     #[private]
-    pub fn after_execute_next_withdrawal(
-        &mut self,
-        account: AccountId,
-        amount: BorrowAssetAmount,
-        #[callback_result] result: Result<Vec<u8>, PromiseError>,
-    ) {
-        match result {
-            Ok(_) => {
+    pub fn after_execute_next_withdrawal(&mut self, account: AccountId, amount: BorrowAssetAmount) {
+        // TODO: Is this check even necessary in a #[private] function?
+        require!(env::promise_results_count() == 1);
+
+        match env::promise_result(0) {
+            PromiseResult::Successful(_) => {
                 // Withdrawal succeeded: remove the withdrawal request from the queue.
 
                 // TODO: If this panics, this is BIG BAD, as it means there is
@@ -488,7 +517,7 @@ impl Contract {
                     "Invariant violation: Queue shifted while locked/in-flight.",
                 );
             }
-            Err(_) => {
+            PromiseResult::Failed => {
                 // Withdrawal failed: unlock the queue so they can try again.
 
                 // This occurs when the contract does not control enough of
