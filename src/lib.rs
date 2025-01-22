@@ -113,6 +113,10 @@ impl FungibleTokenReceiver for Contract {
                 // TODO: This creates a borrow record implicitly. If we
                 // require a discrete "sign-up" step, we will need to add
                 // checks before this function call.
+                //
+                // The sign-up step would only be NFT gating or something of
+                // that sort, which is just an additional pre condition check.
+                // -- https://github.com/Templar-Protocol/contract-mvp/pull/6#discussion_r1923871982
                 self.record_borrow_position_collateral_asset_deposit(&mut borrow_position, amount);
 
                 self.borrow_positions.insert(&sender_id, &borrow_position);
@@ -125,6 +129,12 @@ impl FungibleTokenReceiver for Contract {
                 if let Some(mut borrow_position) = self.borrow_positions.get(&sender_id) {
                     // TODO: This function *errors* on overpayment. Instead, add a
                     // check before and only repay the maximum, then return the excess.
+                    //
+                    // Due to the slightly imprecise calculation of yield and
+                    // other fees, the returning of the excess should be
+                    // anything >1%, for example, over the total amount
+                    // borrowed + fees/interest.
+                    // -- https://github.com/Templar-Protocol/contract-mvp/pull/6#discussion_r1923876327
                     self.record_borrow_position_borrow_asset_repay(&mut borrow_position, amount);
 
                     self.borrow_positions.insert(&sender_id, &borrow_position);
@@ -157,8 +167,8 @@ impl FungibleTokenReceiver for Contract {
                     "Borrow position cannot be liquidated at this price",
                 );
 
-                // TODO: Do we need to check the value of the amount recovered?
-                // We have the price data available in `oracle_price_proof`...
+                // TODO: Implement `maximum_liquidator_spread` here, since
+                // we have the price data available in `oracle_price_proof`.
                 self.record_full_liquidation(&mut borrow_position, amount);
 
                 self.borrow_positions.insert(&account_id, &borrow_position);

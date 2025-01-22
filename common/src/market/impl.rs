@@ -1,3 +1,5 @@
+use std::{u128, u16};
+
 use near_sdk::{
     collections::{LookupMap, TreeMap, UnorderedMap},
     env, near, require, AccountId, BorshStorageKey, IntoStorageKey,
@@ -89,6 +91,7 @@ impl Market {
                     }
                 })
         else {
+            // The amount that the entry is eligible to withdraw is zero, so skip it.
             self.withdrawal_queue
                 .try_pop()
                 .unwrap_or_else(|| env::panic_str("Inconsistent state")); // we just locked the queue
@@ -107,24 +110,49 @@ impl Market {
     }
 
     fn record_borrow_asset_yield_distribution(&mut self, mut amount: BorrowAssetAmount) {
+        // Sanity.
+        if amount.is_zero() {
+            return;
+        }
+
         // First, static yield.
-        // TODO: Lots of `.unwrap()`s in this section.
 
         let total_weight = u16::from(self.configuration.yield_weights.total_weight()) as u128;
         let total_amount = amount.as_u128();
-        for (account_id, share) in self.configuration.yield_weights.r#static.iter() {
-            let portion = amount
-                .split(
-                    total_amount
-                        .checked_mul(*share as u128)
-                        .and_then(|x| x.checked_div(total_weight))
-                        .unwrap(),
-                )
-                .unwrap();
+        if total_weight != 0 {
+            for (account_id, share) in self.configuration.yield_weights.r#static.iter() {
+                let portion = amount
+                    .split(
+                        // Safety:
+                        // total_weight is guaranteed >0 and <=u16::MAX
+                        // share is guaranteed <=u16::MAX
+                        // Therefore, as long as total_amount <= u128::MAX / u16::MAX, this will never overflow.
+                        // u128::MAX / u16::MAX == 5192376087906286159508272029171713 (0x10001000100010001000100010001)
+                        // With 24 decimals, that's about 5,192,376,087 tokens.
+                        // TODO: Fix.
+                        total_amount
+                            .checked_mul(*share as u128)
+                            .unwrap() // TODO: This one might panic.
+                        / total_weight, // This will never panic: is never div0
+                    )
+                    // Safety:
+                    // Guaranteed share <= total_weight
+                    // Guaranteed sum(shares) == total_weight
+                    // Guaranteed sum(floor(total_amount * share / total_weight) for each share in shares) <= total_amount
+                    // Therefore this should never panic.
+                    .unwrap();
 
-            let mut yield_record = self.static_yield.get(account_id).unwrap_or_default();
-            yield_record.borrow_asset.join(portion).unwrap();
-            self.static_yield.insert(account_id, &yield_record);
+                let mut yield_record = self.static_yield.get(account_id).unwrap_or_default();
+                // Assuming borrow_asset is implemented correctly:
+                // this only panics if the circulating supply is somehow >u128::MAX
+                // and we have somehow obtained >u128::MAX amount.
+                // TODO: Include warning somewhere about tokens with >u128::MAX supply.
+                //
+                // Otherwise, borrow_asset is implemented incorrectly.
+                // TODO: If that is the case, how to deal?
+                yield_record.borrow_asset.join(portion).unwrap();
+                self.static_yield.insert(account_id, &yield_record);
+            }
         }
 
         // Next, dynamic (supply-based) yield.
