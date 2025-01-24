@@ -4,7 +4,7 @@ use std::num::NonZeroU16;
 use near_sdk::{env, near, require, AccountId};
 
 use crate::asset::BorrowAssetAmount;
-use crate::rational::Rational;
+use crate::rational::{Fraction, Rational};
 
 mod configuration;
 pub use configuration::*;
@@ -32,7 +32,7 @@ impl BorrowAssetMetrics {
     pub fn calculate(
         deposited: BorrowAssetAmount,
         balance: BorrowAssetAmount,
-        maximum_usage_ratio: Rational<u128>,
+        maximum_usage_ratio: Fraction<u128>,
     ) -> Self {
         require!(deposited >= balance);
 
@@ -55,7 +55,7 @@ impl BorrowAssetMetrics {
 #[test]
 fn test_available_formula() {
     struct Test {
-        maximum_usage_ratio: Rational<u128>,
+        maximum_usage_ratio: Fraction<u128>,
         deposited: u128,
         balance: u128,
         expected_available: u128,
@@ -78,35 +78,35 @@ fn test_available_formula() {
 
     let tests = [
         Test {
-            maximum_usage_ratio: Rational::new(90, 100),
+            maximum_usage_ratio: Fraction::new(90, 100).unwrap(),
             deposited: 10000,
             balance: 5000,
             expected_available: 4000,
             expected_used: 5000,
         },
         Test {
-            maximum_usage_ratio: Rational::new(0, 100),
+            maximum_usage_ratio: Fraction::new(0, 100).unwrap(),
             deposited: 10000,
             balance: 5000,
             expected_available: 0,
             expected_used: 5000,
         },
         Test {
-            maximum_usage_ratio: Rational::new(100, 100),
+            maximum_usage_ratio: Fraction::new(100, 100).unwrap(),
             deposited: 10000,
             balance: 5000,
             expected_available: 5000,
             expected_used: 5000,
         },
         Test {
-            maximum_usage_ratio: Rational::new(100, 100),
+            maximum_usage_ratio: Fraction::new(100, 100).unwrap(),
             deposited: 10000,
             balance: 0,
             expected_available: 0,
             expected_used: 10000,
         },
         Test {
-            maximum_usage_ratio: Rational::new(100, 100),
+            maximum_usage_ratio: Fraction::new(100, 100).unwrap(),
             deposited: 0,
             balance: 0,
             expected_available: 0,

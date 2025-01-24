@@ -1,7 +1,10 @@
 use std::{fmt::Display, marker::PhantomData};
 
 use near_contract_standards::fungible_token::core::ext_ft_core;
-use near_sdk::{env, ext_contract, json_types::U128, near, AccountId, NearToken, Promise};
+use near_sdk::{
+    env, ext_contract, json_types::U128, near, serde::Deserialize, serde_json, AccountId,
+    NearToken, Promise, PromiseOrValue,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[near(serializers = [json, borsh])]
@@ -65,35 +68,22 @@ impl<T: AssetClass> FungibleAsset<T> {
         }
     }
 
-    pub fn current_account_balance(&self, meta: Vec<u8>) -> Promise {
+    pub fn current_account_balance(&self) -> Promise {
         let current_account_id = env::current_account_id();
         match self.kind {
             FungibleAssetKind::Native => {
-                let balance = U128(env::account_balance().as_yoctonear());
-                ext_fungible_asset_balance_receiver::ext(current_account_id)
-                    .private_receive_fungible_asset_balance(Some(balance), meta)
+                ext_return_native_balance::ext(current_account_id).return_native_balance()
             }
-            FungibleAssetKind::Nep141(ref account_id) => ext_ft_core::ext(account_id.clone())
-                .ft_balance_of(current_account_id.clone())
-                .then(
-                    ext_fungible_asset_balance_receiver::ext(current_account_id)
-                        .private_receive_fungible_asset_balance(None, meta),
-                ),
+            FungibleAssetKind::Nep141(ref account_id) => {
+                ext_ft_core::ext(account_id.clone()).ft_balance_of(current_account_id.clone())
+            }
         }
     }
 }
 
-/// Implementation instructions:
-/// - Function MUST be annotated with `#[private]`.
-/// - Asset balance MUST be parsed from `balance` argument xor single promise result as `U128`.
-/// - Arguments MUST be annotated with `#[serializer(borsh)]`.
-#[ext_contract(ext_fungible_asset_balance_receiver)]
-pub trait FungibleAssetBalanceReceiver {
-    fn private_receive_fungible_asset_balance(
-        &mut self,
-        #[serializer(borsh)] balance: Option<U128>,
-        #[serializer(borsh)] meta: Vec<u8>,
-    );
+#[ext_contract(ext_return_native_balance)]
+pub trait ReturnNativeBalance {
+    fn return_native_balance(&self) -> U128;
 }
 
 impl<T: AssetClass> Display for FungibleAsset<T> {

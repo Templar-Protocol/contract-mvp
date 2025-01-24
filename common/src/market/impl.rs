@@ -33,6 +33,7 @@ pub struct Market {
     prefix: Vec<u8>,
     pub configuration: MarketConfiguration,
     pub borrow_asset_deposited: BorrowAssetAmount,
+    pub borrow_asset_in_flight: BorrowAssetAmount,
     pub supply_positions: UnorderedMap<AccountId, SupplyPosition>,
     pub borrow_positions: UnorderedMap<AccountId, BorrowPosition>,
     pub total_borrow_asset_deposited_log: TreeMap<u64, BorrowAssetAmount>,
@@ -57,6 +58,7 @@ impl Market {
             prefix: prefix.clone(),
             configuration,
             borrow_asset_deposited: 0.into(),
+            borrow_asset_in_flight: 0.into(),
             supply_positions: UnorderedMap::new(key!(SupplyPositions)),
             borrow_positions: UnorderedMap::new(key!(BorrowPositions)),
             total_borrow_asset_deposited_log: TreeMap::new(key!(TotalBorrowAssetDepositedLog)),
@@ -66,6 +68,32 @@ impl Market {
             withdrawal_queue: WithdrawalQueue::new(key!(WithdrawalQueue)),
             static_yield: LookupMap::new(key!(StaticYield)),
         }
+    }
+
+    fn get_borrow_asset_available_to_borrow(
+        &self,
+        current_contract_balance: BorrowAssetAmount,
+    ) -> BorrowAssetAmount {
+        let Some(must_retain) = self
+            .configuration
+            .maximum_borrow_asset_usage_ratio
+            .upcast::<u128>()
+            .complement()
+            .checked_scalar_mul(self.borrow_asset_deposited.as_u128())
+            .and_then(|x| x.ceil())
+        else {
+            return 0.into();
+            // TODO: Use U256 instead of U128 for balances.
+            // This won't prevent overflow here, but it will make it harder.
+            // It will prevent overflow for NEAR-native tokens, where the
+            // balance is guaranteed to fit in u128.
+        };
+
+        let known_available = current_contract_balance
+            .as_u128()
+            .saturating_sub(self.borrow_asset_in_flight.as_u128());
+
+        known_available.saturating_sub(must_retain).into()
     }
 
     pub fn try_lock_next_withdrawal_request(
@@ -228,7 +256,18 @@ impl Market {
         borrow_position: &mut BorrowPosition,
         amount: BorrowAssetAmount,
         fees: BorrowAssetAmount,
+        current_contract_balance: BorrowAssetAmount,
     ) {
+        // Ensure we have enough funds to dispense.
+        let available_to_borrow =
+            self.get_borrow_asset_available_to_borrow(current_contract_balance);
+        require!(
+            amount <= available_to_borrow,
+            "Insufficient borrow asset available",
+        );
+
+        // TODO: NEXT: Implement borrow position locking...
+
         borrow_position
             .borrow_asset_fees
             .accumulate_fees(fees, env::block_height());

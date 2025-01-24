@@ -1,12 +1,11 @@
 use std::{
     cmp::Ordering,
-    ops::{BitXor, Div, Sub},
+    ops::{BitXor, Deref, Div, Sub},
 };
 
 use near_sdk::near;
 
-/// NOTE: It may be prudent to have two different "ratio" types: one for any
-/// positive rational, and one restricted to values [0, 1].
+/// Represents a rational number of the form `a / b`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
 pub struct Rational<T>(T, T);
@@ -140,4 +139,59 @@ fn test_gcd() {
     assert_eq!(gcd_euclid(5, 15), 5);
     assert_eq!(gcd_euclid(27, 6), 3);
     assert_eq!(gcd_euclid(200, 17), 1);
+}
+
+/// Represents a rational number of the form `0 <= a / b <= 1`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[near(serializers = [json, borsh])]
+#[serde(
+    try_from = "Rational<T>",
+    bound = "T: Div<Output = T>
+        + BitXor<Output = T> + Sub<Output = T> + Copy + Eq + Ord
+        + near_sdk::serde::de::DeserializeOwned + near_sdk::serde::Serialize"
+)]
+pub struct Fraction<T>(Rational<T>);
+
+impl<T: Div<Output = T> + BitXor<Output = T> + Sub<Output = T> + Copy + Eq + Ord> Fraction<T> {
+    pub fn new(numerator: T, denominator: T) -> Option<Self> {
+        if numerator <= denominator && !is_zero(denominator) {
+            Some(Self(Rational::new(numerator, denominator)))
+        } else {
+            None
+        }
+    }
+
+    pub fn upcast<U: From<T>>(self) -> Fraction<U> {
+        Fraction(self.0.upcast::<U>())
+    }
+
+    /// Calculates `1 - self`.
+    pub fn complement(self) -> Self {
+        let Self(Rational(a, b)) = self;
+        Self(Rational(b - a, b))
+    }
+}
+
+impl<T: Div<Output = T> + BitXor<Output = T> + Sub<Output = T> + Copy + Eq + Ord>
+    TryFrom<Rational<T>> for Fraction<T>
+{
+    type Error = &'static str;
+
+    fn try_from(Rational(a, b): Rational<T>) -> Result<Self, Self::Error> {
+        Self::new(a, b).ok_or("")
+    }
+}
+
+impl<T> From<Fraction<T>> for Rational<T> {
+    fn from(value: Fraction<T>) -> Self {
+        value.0
+    }
+}
+
+impl<T> Deref for Fraction<T> {
+    type Target = Rational<T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }

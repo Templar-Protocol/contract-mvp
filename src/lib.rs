@@ -262,30 +262,14 @@ impl MarketExternalInterface for Contract {
 
         let account_id = env::predecessor_account_id();
 
-        let fees = self
-            .configuration
-            .borrow_origination_fee
-            .of(amount)
-            .unwrap_or_else(|| env::panic_str("Fee calculation failed"));
-
-        let Some(mut borrow_position) = self.borrow_positions.get(&account_id) else {
-            env::panic_str("No borrower record. Please deposit collateral first.");
-        };
-
-        self.record_borrow_position_borrow_asset_withdrawal(&mut borrow_position, amount, fees);
-
-        require!(
-            self.configuration
-                .is_healthy(&borrow_position, oracle_price_proof),
-            "Cannot borrow beyond MCR",
-        );
-
-        self.borrow_positions.insert(&account_id, &borrow_position);
-
+        // -> (current asset balance, price data)
         self.configuration
             .borrow_asset
-            .transfer(account_id, amount) // TODO: Check for failure
-            .then(Self::ext(env::current_account_id()).return_static(serde_json::Value::Null))
+            .current_account_balance()
+            .and(
+                Self::ext(env::current_account_id())
+                    .return_static(serde_json::to_value(oracle_price_proof).unwrap()),
+            )
     }
 
     fn withdraw_collateral(
@@ -501,6 +485,64 @@ impl Contract {
     #[private]
     pub fn return_static(&self, value: serde_json::Value) -> serde_json::Value {
         value
+    }
+
+    #[private]
+    pub fn borrow_01_consume_balance_and_price(
+        &mut self,
+        account_id: AccountId,
+        amount: BorrowAssetAmount,
+        #[callback_result] current_balance: Result<BorrowAssetAmount, PromiseError>,
+        #[callback_result] oracle_price_proof: Result<OraclePriceProof, PromiseError>,
+    ) -> Promise {
+        let current_balance = current_balance
+            .unwrap_or_else(|_| env::panic_str("Failed to fetch borrow asset current balance."));
+        let oracle_price_proof = oracle_price_proof
+            .unwrap_or_else(|_| env::panic_str("Failed to fetch price data from oracle."));
+
+        let fees = self
+            .configuration
+            .borrow_origination_fee
+            .of(amount)
+            .unwrap_or_else(|| env::panic_str("Fee calculation failed"));
+
+        let Some(mut borrow_position) = self.borrow_positions.get(&account_id) else {
+            env::panic_str("No borrower record. Please deposit collateral first.");
+        };
+
+        self.record_borrow_position_borrow_asset_withdrawal(
+            &mut borrow_position,
+            amount,
+            fees,
+            current_balance,
+        );
+
+        require!(
+            self.configuration
+                .is_healthy(&borrow_position, oracle_price_proof),
+            "Cannot borrow beyond MCR",
+        );
+
+        self.borrow_positions.insert(&account_id, &borrow_position);
+
+        self.configuration
+            .borrow_asset
+            .transfer(account_id.clone(), amount) // TODO: Check for failure
+            .then(Self::ext(env::current_account_id()).borrow_02_after_transfer(account_id, amount))
+    }
+
+    #[private]
+    pub fn borrow_02_after_transfer(&mut self, account_id: AccountId, amount: BorrowAssetAmount) {
+        require!(env::promise_results_count() == 1);
+
+        match env::promise_result(0) {
+            PromiseResult::Successful(_) => {
+                // GREAT SUCCESS
+            }
+            PromiseResult::Failed => {
+                // BIG SAD
+            }
+        }
     }
 
     #[private]
