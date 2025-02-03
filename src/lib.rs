@@ -188,12 +188,14 @@ impl MarketExternalInterface for Contract {
         self.configuration.clone()
     }
 
-    fn get_borrow_asset_metrics(&self, borrow_asset_balance: U128) -> BorrowAssetMetrics {
-        BorrowAssetMetrics::calculate(
-            self.borrow_asset_deposited,
-            borrow_asset_balance.0.into(),
-            self.configuration.maximum_borrow_asset_usage_ratio.upcast(),
-        )
+    fn get_borrow_asset_metrics(
+        &self,
+        borrow_asset_balance: BorrowAssetAmount,
+    ) -> BorrowAssetMetrics {
+        BorrowAssetMetrics {
+            available: self.get_borrow_asset_available_to_borrow(borrow_asset_balance),
+            deposited: self.borrow_asset_deposited,
+        }
     }
 
     fn report_remote_asset_balance(&mut self, address: String, asset: String, amount: U128) {
@@ -255,9 +257,11 @@ impl MarketExternalInterface for Contract {
         todo!()
     }
 
-    fn borrow(&mut self, amount: U128, oracle_price_proof: OraclePriceProof) -> Promise {
-        let amount = BorrowAssetAmount::new(amount.0);
-
+    fn borrow(
+        &mut self,
+        amount: BorrowAssetAmount,
+        oracle_price_proof: OraclePriceProof,
+    ) -> Promise {
         require!(!amount.is_zero(), "Borrow amount must be greater than zero");
 
         let account_id = env::predecessor_account_id();
@@ -267,8 +271,13 @@ impl MarketExternalInterface for Contract {
             .borrow_asset
             .current_account_balance()
             .and(
+                // TODO: Replace with call to actual price oracle.
                 Self::ext(env::current_account_id())
                     .return_static(serde_json::to_value(oracle_price_proof).unwrap()),
+            )
+            .then(
+                Self::ext(env::current_account_id())
+                    .borrow_01_consume_balance_and_price(account_id, amount),
             )
     }
 
@@ -525,6 +534,8 @@ impl Contract {
 
         self.borrow_positions.insert(&account_id, &borrow_position);
 
+        self.borrow_asset_in_flight.join(amount);
+
         self.configuration
             .borrow_asset
             .transfer(account_id.clone(), amount) // TODO: Check for failure
@@ -538,9 +549,32 @@ impl Contract {
         match env::promise_result(0) {
             PromiseResult::Successful(_) => {
                 // GREAT SUCCESS
+                // Borrow position has already been created: revert locks.
+                self.borrow_asset_in_flight.split(amount);
+                // TODO: Unlock borrow record too.
             }
             PromiseResult::Failed => {
-                // BIG SAD
+                // Likely reasons for failure:
+                //
+                // 1. Balance oracle is out-of-date. This is kind of bad, but
+                //  not necessarily catastrophic nor unrecoverable. Probably,
+                //  the oracle is just lagging and will be fine if the user
+                //  tries again later.
+                //
+                // Mitigation strategy: Revert locks & state changes.
+                //
+                // 2. MPC signing failed or took too long. Need to do a bit
+                //  more research to see if it is possible for the signature to
+                //  still show up on chain after the promise expires.
+                //
+                // Mitigation strategy: Retain locks until we know the
+                // signature will not be issued. Note that we can't implement
+                // this strategy until we implement asset transfer for MPC
+                // assets, so we IGNORE THIS CASE FOR NOW.
+                //
+                // TODO: Implement case 2 mitigation.
+
+                self.borrow_asset_in_flight.split(amount);
             }
         }
     }

@@ -70,7 +70,7 @@ impl Market {
         }
     }
 
-    fn get_borrow_asset_available_to_borrow(
+    pub fn get_borrow_asset_available_to_borrow(
         &self,
         current_contract_balance: BorrowAssetAmount,
     ) -> BorrowAssetAmount {

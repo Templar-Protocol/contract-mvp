@@ -1,10 +1,7 @@
 use std::{fmt::Display, marker::PhantomData};
 
 use near_contract_standards::fungible_token::core::ext_ft_core;
-use near_sdk::{
-    env, ext_contract, json_types::U128, near, serde::Deserialize, serde_json, AccountId,
-    NearToken, Promise, PromiseOrValue,
-};
+use near_sdk::{env, ext_contract, json_types::U128, near, AccountId, NearToken, Promise};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[near(serializers = [json, borsh])]

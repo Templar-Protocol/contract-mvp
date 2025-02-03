@@ -11,7 +11,7 @@ use templar_common::{
     borrow::{BorrowPosition, BorrowStatus},
     fee::{Fee, TimeBasedFee},
     market::{MarketConfiguration, Nep141MarketDepositMessage, OraclePriceProof, YieldWeights},
-    rational::Rational,
+    rational::{Fraction, Rational},
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
@@ -49,7 +49,7 @@ fn market_configuration(
         balance_oracle_account_id: "balance_oracle".parse().unwrap(),
         liquidator_account_id,
         minimum_collateral_ratio_per_borrow: Rational::new(120, 100),
-        maximum_borrow_asset_usage_ratio: Rational::new(99, 100),
+        maximum_borrow_asset_usage_ratio: Fraction::new(99, 100).unwrap(),
         borrow_origination_fee: Fee::Proportional(Rational::new(10, 100)),
         borrow_annual_maintenance_fee: Fee::zero(),
         maximum_borrow_duration_ms: None,
@@ -571,13 +571,13 @@ async fn test_market_happy_path() {
     );
 
     // Step 1: Supply user sends tokens to contract to use for borrows.
-    c.supply(&supply_user, 1000).await;
+    c.supply(&supply_user, 1100).await;
 
     let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
 
     assert_eq!(
         supply_position.get_borrow_asset_deposit().as_u128(),
-        1000,
+        1100,
         "Supply position should match amount of tokens supplied to contract",
     );
 
@@ -694,18 +694,18 @@ async fn test_market_happy_path() {
                 assert_eq!(queue_status.length, 0);
 
                 let balance_before = c.borrow_asset_balance_of(supply_user.id()).await;
-                c.create_supply_withdrawal_request(&supply_user, 1000).await;
+                c.create_supply_withdrawal_request(&supply_user, 1100).await;
 
                 // Queue should have 1 request now.
                 let request_status = c
                     .get_supply_withdrawal_request_status(supply_user.id())
                     .await
                     .expect("Should be enqueued now");
-                assert_eq!(request_status.amount.as_u128(), 1000);
+                assert_eq!(request_status.amount.as_u128(), 1100);
                 assert_eq!(request_status.depth.as_u128(), 0);
                 assert_eq!(request_status.index, 0);
                 let queue_status = c.get_supply_withdrawal_queue_status().await;
-                assert_eq!(queue_status.depth.as_u128(), 1000);
+                assert_eq!(queue_status.depth.as_u128(), 1100);
                 assert_eq!(queue_status.length, 1);
 
                 c.execute_next_supply_withdrawal_request(&supply_user).await;
@@ -724,7 +724,7 @@ async fn test_market_happy_path() {
 
                 let balance_after = c.borrow_asset_balance_of(supply_user.id()).await;
 
-                assert_eq!(balance_after - balance_before, 1000);
+                assert_eq!(balance_after - balance_before, 1100);
             }
         },
         // Protocol yield.
