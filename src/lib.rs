@@ -19,6 +19,7 @@ use templar_common::{
     },
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
+    util::Lockable,
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
 };
 
@@ -105,10 +106,10 @@ impl FungibleTokenReceiver for Contract {
             Nep141MarketDepositMessage::Collateralize => {
                 let amount = use_collateral_asset();
 
-                let mut borrow_position = self
-                    .borrow_positions
-                    .get(&sender_id)
-                    .unwrap_or_else(|| BorrowPosition::new(env::block_height()));
+                let Some(mut borrow_position) = self.get_unlocked_borrow_position(&sender_id)
+                else {
+                    env::panic_str("Borrow position is locked");
+                };
 
                 // TODO: This creates a borrow record implicitly. If we
                 // require a discrete "sign-up" step, we will need to add
@@ -119,7 +120,7 @@ impl FungibleTokenReceiver for Contract {
                 // -- https://github.com/Templar-Protocol/contract-mvp/pull/6#discussion_r1923871982
                 self.record_borrow_position_collateral_asset_deposit(&mut borrow_position, amount);
 
-                self.borrow_positions.insert(&sender_id, &borrow_position);
+                self.insert_unlocked_borrow_position(&sender_id, borrow_position);
 
                 PromiseOrValue::Value(U128(0))
             }
@@ -155,10 +156,12 @@ impl FungibleTokenReceiver for Contract {
                     "Account not authorized to perform liquidations",
                 );
 
-                let mut borrow_position = self
-                    .borrow_positions
-                    .get(&account_id)
-                    .unwrap_or_else(|| BorrowPosition::new(env::block_height()));
+                // We disregard locking here to prevent borrowers from making it difficult to
+                // liquidate by continually locking their record.
+                //
+                // This will always be safe if the following assumption holds:
+                // - The time it takes for the asset price to fluctuate such that the price
+                let mut borrow_position = self.force_get_borrow_position(&account_id);
 
                 require!(
                     !self

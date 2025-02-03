@@ -12,6 +12,7 @@ use crate::{
     rational::Rational,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
+    util::Lockable,
     withdrawal_queue::WithdrawalQueue,
 };
 
@@ -35,7 +36,7 @@ pub struct Market {
     pub borrow_asset_deposited: BorrowAssetAmount,
     pub borrow_asset_in_flight: BorrowAssetAmount,
     pub supply_positions: UnorderedMap<AccountId, SupplyPosition>,
-    pub borrow_positions: UnorderedMap<AccountId, BorrowPosition>,
+    pub borrow_positions: UnorderedMap<AccountId, Lockable<BorrowPosition>>,
     pub total_borrow_asset_deposited_log: TreeMap<u64, BorrowAssetAmount>,
     pub borrow_asset_yield_distribution_log: TreeMap<u64, BorrowAssetAmount>,
     pub withdrawal_queue: WithdrawalQueue,
@@ -405,5 +406,33 @@ impl Market {
             // TODO: some sort of recovery for suppliers
             todo!("Took a loss during liquidation");
         }
+    }
+
+    /// Returns the borrow position regardless of whether it is "locked."
+    ///
+    /// Returns an empty/new borrow position if a record for the account does not exist.
+    pub fn force_get_borrow_position(&self, account_id: &AccountId) -> BorrowPosition {
+        self.borrow_positions
+            .get(account_id)
+            .map_or_else(|| BorrowPosition::new(env::block_height()), Lockable::take)
+    }
+
+    /// Returns the borrow position if it is unlocked.
+    ///
+    /// Returns an empty/new borrow position if a record for the account does not exist.
+    pub fn get_unlocked_borrow_position(&self, account_id: &AccountId) -> Option<BorrowPosition> {
+        self.borrow_positions.get(account_id).map_or_else(
+            || Some(BorrowPosition::new(env::block_height())),
+            Lockable::to_unlocked,
+        )
+    }
+
+    pub fn insert_unlocked_borrow_position(
+        &mut self,
+        account_id: &AccountId,
+        borrow_position: BorrowPosition,
+    ) {
+        self.borrow_positions
+            .insert(account_id, &Lockable::Unlocked(borrow_position));
     }
 }

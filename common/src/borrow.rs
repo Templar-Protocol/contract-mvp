@@ -55,12 +55,10 @@ impl BorrowPosition {
         }
     }
 
-    #[inline]
     pub fn get_borrow_asset_principal(&self) -> BorrowAssetAmount {
         self.borrow_asset_principal
     }
 
-    #[inline]
     pub fn get_total_borrow_asset_liability(&self) -> BorrowAssetAmount {
         let mut total = BorrowAssetAmount::zero();
         total.join(self.borrow_asset_principal);
