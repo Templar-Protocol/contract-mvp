@@ -61,6 +61,21 @@ fn market_configuration(
     }
 }
 
+#[test]
+#[ignore = "generates a dummy config"]
+fn gen_config() {
+    println!(
+        "{}",
+        near_sdk::serde_json::to_string(&market_configuration(
+            "usdt.fakes.testnet".parse().unwrap(),
+            "wrap.testnet".parse().unwrap(),
+            "liquidator".parse().unwrap(),
+            YieldWeights::new_with_supply_weight(1)
+        ))
+        .unwrap()
+    );
+}
+
 async fn setup_market(worker: &Worker<Sandbox>, configuration: MarketConfiguration) -> Contract {
     let contract_wasm = near_workspaces::compile_project("./").await.unwrap();
 

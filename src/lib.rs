@@ -19,7 +19,6 @@ use templar_common::{
     },
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
-    util::Lockable,
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
 };
 
@@ -106,10 +105,10 @@ impl FungibleTokenReceiver for Contract {
             Nep141MarketDepositMessage::Collateralize => {
                 let amount = use_collateral_asset();
 
-                let Some(mut borrow_position) = self.get_unlocked_borrow_position(&sender_id)
-                else {
-                    env::panic_str("Borrow position is locked");
-                };
+                let mut borrow_position = self
+                    .borrow_positions
+                    .get(&sender_id)
+                    .unwrap_or_else(|| BorrowPosition::new(env::block_height()));
 
                 // TODO: This creates a borrow record implicitly. If we
                 // require a discrete "sign-up" step, we will need to add
@@ -120,7 +119,7 @@ impl FungibleTokenReceiver for Contract {
                 // -- https://github.com/Templar-Protocol/contract-mvp/pull/6#discussion_r1923871982
                 self.record_borrow_position_collateral_asset_deposit(&mut borrow_position, amount);
 
-                self.insert_unlocked_borrow_position(&sender_id, borrow_position);
+                self.borrow_positions.insert(&sender_id, &borrow_position);
 
                 PromiseOrValue::Value(U128(0))
             }
@@ -156,12 +155,10 @@ impl FungibleTokenReceiver for Contract {
                     "Account not authorized to perform liquidations",
                 );
 
-                // We disregard locking here to prevent borrowers from making it difficult to
-                // liquidate by continually locking their record.
-                //
-                // This will always be safe if the following assumption holds:
-                // - The time it takes for the asset price to fluctuate such that the price
-                let mut borrow_position = self.force_get_borrow_position(&account_id);
+                let mut borrow_position = self
+                    .borrow_positions
+                    .get(&account_id)
+                    .unwrap_or_else(|| BorrowPosition::new(env::block_height()));
 
                 require!(
                     !self
@@ -512,6 +509,13 @@ impl Contract {
         let oracle_price_proof = oracle_price_proof
             .unwrap_or_else(|_| env::panic_str("Failed to fetch price data from oracle."));
 
+        // Ensure we have enough funds to dispense.
+        let available_to_borrow = self.get_borrow_asset_available_to_borrow(current_balance);
+        require!(
+            amount <= available_to_borrow,
+            "Insufficient borrow asset available",
+        );
+
         let fees = self
             .configuration
             .borrow_origination_fee
@@ -522,11 +526,10 @@ impl Contract {
             env::panic_str("No borrower record. Please deposit collateral first.");
         };
 
-        self.record_borrow_position_borrow_asset_withdrawal(
+        self.record_borrow_position_borrow_asset_in_flight_start(
             &mut borrow_position,
             amount,
             fees,
-            current_balance,
         );
 
         require!(
@@ -537,24 +540,41 @@ impl Contract {
 
         self.borrow_positions.insert(&account_id, &borrow_position);
 
-        self.borrow_asset_in_flight.join(amount);
-
         self.configuration
             .borrow_asset
             .transfer(account_id.clone(), amount) // TODO: Check for failure
-            .then(Self::ext(env::current_account_id()).borrow_02_after_transfer(account_id, amount))
+            .then(
+                Self::ext(env::current_account_id())
+                    .borrow_02_after_transfer(account_id, amount, fees),
+            )
     }
 
     #[private]
-    pub fn borrow_02_after_transfer(&mut self, account_id: AccountId, amount: BorrowAssetAmount) {
+    pub fn borrow_02_after_transfer(
+        &mut self,
+        account_id: AccountId,
+        amount: BorrowAssetAmount,
+        fees: BorrowAssetAmount,
+    ) {
         require!(env::promise_results_count() == 1);
+
+        let Some(mut borrow_position) = self.borrow_positions.get(&account_id) else {
+            env::panic_str("Invariant violation: borrow position does not exist after transfer.");
+        };
+
+        self.record_borrow_position_borrow_asset_in_flight_end(&mut borrow_position, amount, fees);
 
         match env::promise_result(0) {
             PromiseResult::Successful(_) => {
                 // GREAT SUCCESS
-                // Borrow position has already been created: revert locks.
-                self.borrow_asset_in_flight.split(amount);
-                // TODO: Unlock borrow record too.
+                //
+                // Borrow position has already been created: finalize
+                // withdrawal record.
+                self.record_borrow_position_borrow_asset_withdrawal(
+                    &mut borrow_position,
+                    amount,
+                    fees,
+                );
             }
             PromiseResult::Failed => {
                 // Likely reasons for failure:
@@ -564,7 +584,8 @@ impl Contract {
                 //  the oracle is just lagging and will be fine if the user
                 //  tries again later.
                 //
-                // Mitigation strategy: Revert locks & state changes.
+                // Mitigation strategy: Revert locks & state changes (i.e. do
+                // nothing else).
                 //
                 // 2. MPC signing failed or took too long. Need to do a bit
                 //  more research to see if it is possible for the signature to
@@ -576,10 +597,10 @@ impl Contract {
                 // assets, so we IGNORE THIS CASE FOR NOW.
                 //
                 // TODO: Implement case 2 mitigation.
-
-                self.borrow_asset_in_flight.split(amount);
             }
         }
+
+        self.borrow_positions.insert(&account_id, &borrow_position);
     }
 
     #[private]
