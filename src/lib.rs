@@ -188,12 +188,14 @@ impl MarketExternalInterface for Contract {
         self.configuration.clone()
     }
 
-    fn get_borrow_asset_metrics(&self, borrow_asset_balance: U128) -> BorrowAssetMetrics {
-        BorrowAssetMetrics::calculate(
-            self.borrow_asset_deposited,
-            borrow_asset_balance.0.into(),
-            self.configuration.maximum_borrow_asset_usage_ratio.upcast(),
-        )
+    fn get_borrow_asset_metrics(
+        &self,
+        borrow_asset_balance: BorrowAssetAmount,
+    ) -> BorrowAssetMetrics {
+        BorrowAssetMetrics {
+            available: self.get_borrow_asset_available_to_borrow(borrow_asset_balance),
+            deposited: self.borrow_asset_deposited,
+        }
     }
 
     fn report_remote_asset_balance(&mut self, address: String, asset: String, amount: U128) {
@@ -255,37 +257,28 @@ impl MarketExternalInterface for Contract {
         todo!()
     }
 
-    fn borrow(&mut self, amount: U128, oracle_price_proof: OraclePriceProof) -> Promise {
-        let amount = BorrowAssetAmount::new(amount.0);
-
+    fn borrow(
+        &mut self,
+        amount: BorrowAssetAmount,
+        oracle_price_proof: OraclePriceProof,
+    ) -> Promise {
         require!(!amount.is_zero(), "Borrow amount must be greater than zero");
 
         let account_id = env::predecessor_account_id();
 
-        let fees = self
-            .configuration
-            .borrow_origination_fee
-            .of(amount)
-            .unwrap_or_else(|| env::panic_str("Fee calculation failed"));
-
-        let Some(mut borrow_position) = self.borrow_positions.get(&account_id) else {
-            env::panic_str("No borrower record. Please deposit collateral first.");
-        };
-
-        self.record_borrow_position_borrow_asset_withdrawal(&mut borrow_position, amount, fees);
-
-        require!(
-            self.configuration
-                .is_healthy(&borrow_position, oracle_price_proof),
-            "Cannot borrow beyond MCR",
-        );
-
-        self.borrow_positions.insert(&account_id, &borrow_position);
-
+        // -> (current asset balance, price data)
         self.configuration
             .borrow_asset
-            .transfer(account_id, amount) // TODO: Check for failure
-            .then(Self::ext(env::current_account_id()).return_static(serde_json::Value::Null))
+            .current_account_balance()
+            .and(
+                // TODO: Replace with call to actual price oracle.
+                Self::ext(env::current_account_id())
+                    .return_static(serde_json::to_value(oracle_price_proof).unwrap()),
+            )
+            .then(
+                Self::ext(env::current_account_id())
+                    .borrow_01_consume_balance_and_price(account_id, amount),
+            )
     }
 
     fn withdraw_collateral(
@@ -501,6 +494,113 @@ impl Contract {
     #[private]
     pub fn return_static(&self, value: serde_json::Value) -> serde_json::Value {
         value
+    }
+
+    #[private]
+    pub fn borrow_01_consume_balance_and_price(
+        &mut self,
+        account_id: AccountId,
+        amount: BorrowAssetAmount,
+        #[callback_result] current_balance: Result<BorrowAssetAmount, PromiseError>,
+        #[callback_result] oracle_price_proof: Result<OraclePriceProof, PromiseError>,
+    ) -> Promise {
+        let current_balance = current_balance
+            .unwrap_or_else(|_| env::panic_str("Failed to fetch borrow asset current balance."));
+        let oracle_price_proof = oracle_price_proof
+            .unwrap_or_else(|_| env::panic_str("Failed to fetch price data from oracle."));
+
+        // Ensure we have enough funds to dispense.
+        let available_to_borrow = self.get_borrow_asset_available_to_borrow(current_balance);
+        require!(
+            amount <= available_to_borrow,
+            "Insufficient borrow asset available",
+        );
+
+        let fees = self
+            .configuration
+            .borrow_origination_fee
+            .of(amount)
+            .unwrap_or_else(|| env::panic_str("Fee calculation failed"));
+
+        let Some(mut borrow_position) = self.borrow_positions.get(&account_id) else {
+            env::panic_str("No borrower record. Please deposit collateral first.");
+        };
+
+        self.record_borrow_position_borrow_asset_in_flight_start(
+            &mut borrow_position,
+            amount,
+            fees,
+        );
+
+        require!(
+            self.configuration
+                .is_healthy(&borrow_position, oracle_price_proof),
+            "Cannot borrow beyond MCR",
+        );
+
+        self.borrow_positions.insert(&account_id, &borrow_position);
+
+        self.configuration
+            .borrow_asset
+            .transfer(account_id.clone(), amount) // TODO: Check for failure
+            .then(
+                Self::ext(env::current_account_id())
+                    .borrow_02_after_transfer(account_id, amount, fees),
+            )
+    }
+
+    #[private]
+    pub fn borrow_02_after_transfer(
+        &mut self,
+        account_id: AccountId,
+        amount: BorrowAssetAmount,
+        fees: BorrowAssetAmount,
+    ) {
+        require!(env::promise_results_count() == 1);
+
+        let Some(mut borrow_position) = self.borrow_positions.get(&account_id) else {
+            env::panic_str("Invariant violation: borrow position does not exist after transfer.");
+        };
+
+        self.record_borrow_position_borrow_asset_in_flight_end(&mut borrow_position, amount, fees);
+
+        match env::promise_result(0) {
+            PromiseResult::Successful(_) => {
+                // GREAT SUCCESS
+                //
+                // Borrow position has already been created: finalize
+                // withdrawal record.
+                self.record_borrow_position_borrow_asset_withdrawal(
+                    &mut borrow_position,
+                    amount,
+                    fees,
+                );
+            }
+            PromiseResult::Failed => {
+                // Likely reasons for failure:
+                //
+                // 1. Balance oracle is out-of-date. This is kind of bad, but
+                //  not necessarily catastrophic nor unrecoverable. Probably,
+                //  the oracle is just lagging and will be fine if the user
+                //  tries again later.
+                //
+                // Mitigation strategy: Revert locks & state changes (i.e. do
+                // nothing else).
+                //
+                // 2. MPC signing failed or took too long. Need to do a bit
+                //  more research to see if it is possible for the signature to
+                //  still show up on chain after the promise expires.
+                //
+                // Mitigation strategy: Retain locks until we know the
+                // signature will not be issued. Note that we can't implement
+                // this strategy until we implement asset transfer for MPC
+                // assets, so we IGNORE THIS CASE FOR NOW.
+                //
+                // TODO: Implement case 2 mitigation.
+            }
+        }
+
+        self.borrow_positions.insert(&account_id, &borrow_position);
     }
 
     #[private]

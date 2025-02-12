@@ -33,6 +33,7 @@ pub struct Market {
     prefix: Vec<u8>,
     pub configuration: MarketConfiguration,
     pub borrow_asset_deposited: BorrowAssetAmount,
+    pub borrow_asset_in_flight: BorrowAssetAmount,
     pub supply_positions: UnorderedMap<AccountId, SupplyPosition>,
     pub borrow_positions: UnorderedMap<AccountId, BorrowPosition>,
     pub total_borrow_asset_deposited_log: TreeMap<u64, BorrowAssetAmount>,
@@ -57,6 +58,7 @@ impl Market {
             prefix: prefix.clone(),
             configuration,
             borrow_asset_deposited: 0.into(),
+            borrow_asset_in_flight: 0.into(),
             supply_positions: UnorderedMap::new(key!(SupplyPositions)),
             borrow_positions: UnorderedMap::new(key!(BorrowPositions)),
             total_borrow_asset_deposited_log: TreeMap::new(key!(TotalBorrowAssetDepositedLog)),
@@ -66,6 +68,32 @@ impl Market {
             withdrawal_queue: WithdrawalQueue::new(key!(WithdrawalQueue)),
             static_yield: LookupMap::new(key!(StaticYield)),
         }
+    }
+
+    pub fn get_borrow_asset_available_to_borrow(
+        &self,
+        current_contract_balance: BorrowAssetAmount,
+    ) -> BorrowAssetAmount {
+        let Some(must_retain) = self
+            .configuration
+            .maximum_borrow_asset_usage_ratio
+            .upcast::<u128>()
+            .complement()
+            .checked_scalar_mul(self.borrow_asset_deposited.as_u128())
+            .and_then(|x| x.ceil())
+        else {
+            return 0.into();
+            // TODO: Use U256 instead of U128 for balances.
+            // This won't prevent overflow here, but it will make it harder.
+            // It will prevent overflow for NEAR-native tokens, where the
+            // balance is guaranteed to fit in u128.
+        };
+
+        let known_available = current_contract_balance
+            .as_u128()
+            .saturating_sub(self.borrow_asset_in_flight.as_u128());
+
+        known_available.saturating_sub(must_retain).into()
     }
 
     pub fn try_lock_next_withdrawal_request(
@@ -223,6 +251,40 @@ impl Market {
             .unwrap_or_else(|| env::panic_str("Borrow position collateral asset underflow"));
     }
 
+    pub fn record_borrow_position_borrow_asset_in_flight_start(
+        &mut self,
+        borrow_position: &mut BorrowPosition,
+        amount: BorrowAssetAmount,
+        fees: BorrowAssetAmount,
+    ) {
+        self.borrow_asset_in_flight
+            .join(amount)
+            .unwrap_or_else(|| env::panic_str("Borrow asset in flight amount overflow"));
+        borrow_position
+            .temporary_lock
+            .join(amount)
+            .and_then(|_| borrow_position.temporary_lock.join(fees))
+            .unwrap_or_else(|| env::panic_str("Borrow position in flight amount overflow"));
+    }
+
+    pub fn record_borrow_position_borrow_asset_in_flight_end(
+        &mut self,
+        borrow_position: &mut BorrowPosition,
+        amount: BorrowAssetAmount,
+        fees: BorrowAssetAmount,
+    ) {
+        // This should never panic, because a given amount of in-flight borrow
+        // asset should always be added before it is removed.
+        self.borrow_asset_in_flight
+            .split(amount)
+            .unwrap_or_else(|| env::panic_str("Borrow asset in flight amount underflow"));
+        borrow_position
+            .temporary_lock
+            .split(amount)
+            .and_then(|_| borrow_position.temporary_lock.split(fees))
+            .unwrap_or_else(|| env::panic_str("Borrow position in flight amount underflow"));
+    }
+
     pub fn record_borrow_position_borrow_asset_withdrawal(
         &mut self,
         borrow_position: &mut BorrowPosition,
@@ -367,4 +429,32 @@ impl Market {
             todo!("Took a loss during liquidation");
         }
     }
+
+    // /// Returns the borrow position regardless of whether it is "locked."
+    // ///
+    // /// Returns an empty/new borrow position if a record for the account does not exist.
+    // pub fn force_get_borrow_position(&self, account_id: &AccountId) -> BorrowPosition {
+    //     self.borrow_positions
+    //         .get(account_id)
+    //         .map_or_else(|| BorrowPosition::new(env::block_height()), Lockable::take)
+    // }
+
+    // /// Returns the borrow position if it is unlocked.
+    // ///
+    // /// Returns an empty/new borrow position if a record for the account does not exist.
+    // pub fn get_unlocked_borrow_position(&self, account_id: &AccountId) -> Option<BorrowPosition> {
+    //     self.borrow_positions.get(account_id).map_or_else(
+    //         || Some(BorrowPosition::new(env::block_height())),
+    //         Lockable::to_unlocked,
+    //     )
+    // }
+
+    // pub fn insert_unlocked_borrow_position(
+    //     &mut self,
+    //     account_id: &AccountId,
+    //     borrow_position: BorrowPosition,
+    // ) {
+    //     self.borrow_positions
+    //         .insert(account_id, &Lockable::Unlocked(borrow_position));
+    // }
 }

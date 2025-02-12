@@ -1,11 +1,15 @@
 [workspace]
-members = [".", "common", "mock/*"]
+members = [".", "common", "mock/*", "test-utils"]
 
 [workspace.dependencies]
 near-sdk = { version = "5.7", features = ["unstable", "unit-testing"] }
 near-contract-standards = "5.7"
+near-workspaces = { version = "0.16", features = ["unstable"] }
+rstest = { version = "0.24" }
 serde = { version = "1.0", features = ["derive"] }
 templar-common = { path = "./common" }
+test-utils = { path = "./test-utils" }
+tokio = { version = "1.30.0", features = ["full"] }
 
 [package]
 name = "contract-mvp"
@@ -35,17 +39,17 @@ container_build_command = ["cargo", "near", "build"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
-# borsh.workspace = true
-# hex.workspace = true
 near-sdk.workspace = true
 near-contract-standards.workspace = true
 serde.workspace = true
 templar-common.workspace = true
 
 [dev-dependencies]
-near-sdk = { version = "5.7", features = ["unit-testing"] }
-near-workspaces = { version = "0.16", features = ["unstable"] }
-tokio = { version = "1.30.0", features = ["full"] }
+near-sdk.workspace = true
+near-workspaces.workspace = true
+rstest.workspace = true
+test-utils.workspace = true
+tokio.workspace = true
 
 [profile.release]
 codegen-units = 1

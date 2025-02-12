@@ -23,7 +23,10 @@ pub trait MarketExternalInterface {
     /// Takes current balance as an argument so that it can be called as view.
     /// `borrow_asset_balance` should be retrieved from the borrow asset
     /// contract specified in the market configuration.
-    fn get_borrow_asset_metrics(&self, borrow_asset_balance: U128) -> BorrowAssetMetrics;
+    fn get_borrow_asset_metrics(
+        &self,
+        borrow_asset_balance: BorrowAssetAmount,
+    ) -> BorrowAssetMetrics;
 
     // TODO: Decide how to work with remote balances:
 
@@ -64,7 +67,11 @@ pub trait MarketExternalInterface {
     ) -> String;
 
     fn initialize_borrow(&mut self, borrow_asset_amount: U128, collateral_asset_amount: U128);
-    fn borrow(&mut self, amount: U128, oracle_price_proof: OraclePriceProof) -> Promise;
+    fn borrow(
+        &mut self,
+        amount: BorrowAssetAmount,
+        oracle_price_proof: OraclePriceProof,
+    ) -> Promise;
     fn withdraw_collateral(
         &mut self,
         amount: U128,

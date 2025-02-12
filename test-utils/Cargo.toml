@@ -1,0 +1,10 @@
+[package]
+name = "test-utils"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+near-sdk.workspace = true
+near-workspaces.workspace = true
+templar-common.workspace = true
+tokio.workspace = true

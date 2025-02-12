@@ -4,7 +4,7 @@ use crate::{
     asset::{BorrowAsset, BorrowAssetAmount, CollateralAsset, FungibleAsset},
     borrow::BorrowPosition,
     fee::{Fee, TimeBasedFee},
-    rational::Rational,
+    rational::{Fraction, Rational},
 };
 
 use super::{OraclePriceProof, YieldWeights};
@@ -20,7 +20,7 @@ pub struct MarketConfiguration {
     /// How much of the deposited principal may be lent out (up to 100%)?
     /// This is a matter of protection for supply providers.
     /// Set to 99% for starters.
-    pub maximum_borrow_asset_usage_ratio: Rational<u16>,
+    pub maximum_borrow_asset_usage_ratio: Fraction<u16>,
     /// The origination fee is a one-time amount added to the principal of the
     /// borrow. That is to say, the origination fee is denominated in units of
     /// the borrow asset and is paid by the borrowing account during repayment
@@ -65,12 +65,7 @@ impl MarketConfiguration {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        asset::FungibleAsset,
-        fee::{Fee, TimeBasedFee},
-        market::{MarketConfiguration, YieldWeights},
-        rational::Rational,
-    };
+    use super::*;
 
     // #[ignore = "generate sample configuration"]
     #[test]
@@ -83,7 +78,7 @@ mod tests {
                 balance_oracle_account_id: "root.testnet".parse().unwrap(),
                 liquidator_account_id: "templar-in-training.testnet".parse().unwrap(),
                 minimum_collateral_ratio_per_borrow: Rational::new(120, 100),
-                maximum_borrow_asset_usage_ratio: Rational::new(99, 100),
+                maximum_borrow_asset_usage_ratio: Fraction::new(99, 100).unwrap(),
                 borrow_origination_fee: Fee::Proportional(Rational::new(1, 100)),
                 borrow_annual_maintenance_fee: Fee::zero(),
                 maximum_borrow_duration_ms: None,

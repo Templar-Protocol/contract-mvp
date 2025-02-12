@@ -44,6 +44,7 @@ pub struct BorrowPosition {
     pub collateral_asset_deposit: CollateralAssetAmount,
     borrow_asset_principal: BorrowAssetAmount,
     pub borrow_asset_fees: FeeRecord<BorrowAsset>,
+    pub temporary_lock: BorrowAssetAmount,
 }
 
 impl BorrowPosition {
@@ -52,19 +53,19 @@ impl BorrowPosition {
             collateral_asset_deposit: 0.into(),
             borrow_asset_principal: 0.into(),
             borrow_asset_fees: FeeRecord::new(block_height),
+            temporary_lock: 0.into(),
         }
     }
 
-    #[inline]
     pub fn get_borrow_asset_principal(&self) -> BorrowAssetAmount {
         self.borrow_asset_principal
     }
 
-    #[inline]
     pub fn get_total_borrow_asset_liability(&self) -> BorrowAssetAmount {
         let mut total = BorrowAssetAmount::zero();
         total.join(self.borrow_asset_principal);
         total.join(self.borrow_asset_fees.total);
+        total.join(self.temporary_lock);
         total
     }
 
