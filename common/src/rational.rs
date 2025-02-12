@@ -86,11 +86,11 @@ macro_rules! impl_rational {
                 self.0 == 0
             }
 
-            pub fn one() -> Self {
+            pub const fn one() -> Self {
                 Self(1, 1)
             }
 
-            pub fn zero() -> Self {
+            pub const fn zero() -> Self {
                 Self(0, 1)
             }
 
