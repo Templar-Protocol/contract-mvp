@@ -161,10 +161,14 @@ impl FungibleTokenReceiver for Contract {
                     .unwrap_or_else(|| BorrowPosition::new(env::block_height()));
 
                 require!(
-                    !self
-                        .configuration
-                        .is_healthy(&borrow_position, oracle_price_proof),
-                    "Borrow position cannot be liquidated at this price",
+                    self.configuration
+                        .borrow_status(
+                            &borrow_position,
+                            oracle_price_proof,
+                            env::block_timestamp_ms(),
+                        )
+                        .is_liquidation(),
+                    "Borrow position cannot be liquidated",
                 );
 
                 // TODO: Implement `maximum_liquidator_spread` here, since
@@ -235,14 +239,11 @@ impl MarketExternalInterface for Contract {
             return None;
         };
 
-        if self
-            .configuration
-            .is_healthy(&borrow_position, oracle_price_proof)
-        {
-            Some(BorrowStatus::Healthy)
-        } else {
-            Some(BorrowStatus::Liquidation)
-        }
+        Some(self.configuration.borrow_status(
+            &borrow_position,
+            oracle_price_proof,
+            env::block_timestamp_ms(),
+        ))
     }
 
     fn get_collateral_asset_deposit_address_for(
@@ -298,9 +299,9 @@ impl MarketExternalInterface for Contract {
 
         if !borrow_position.get_total_borrow_asset_liability().is_zero() {
             require!(
-                self.configuration.is_healthy(
+                self.configuration.is_within_minimum_collateral_ratio(
                     &borrow_position,
-                    oracle_price_proof.unwrap_or_else(|| env::panic_str("Must provide price"))
+                    oracle_price_proof.unwrap_or_else(|| env::panic_str("Must provide price")),
                 ),
                 "Borrow must still be above MCR after collateral withdrawal.",
             )
@@ -534,8 +535,13 @@ impl Contract {
 
         require!(
             self.configuration
-                .is_healthy(&borrow_position, oracle_price_proof),
-            "Cannot borrow beyond MCR",
+                .borrow_status(
+                    &borrow_position,
+                    oracle_price_proof,
+                    env::block_timestamp_ms(),
+                )
+                .is_healthy(),
+            "New position would be in liquidation",
         );
 
         self.borrow_positions.insert(&account_id, &borrow_position);

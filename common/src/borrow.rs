@@ -8,7 +8,24 @@ use crate::asset::{
 #[near(serializers = [borsh, json])]
 pub enum BorrowStatus {
     Healthy,
-    Liquidation,
+    Liquidation(LiquidationReason),
+}
+
+impl BorrowStatus {
+    pub fn is_healthy(&self) -> bool {
+        matches!(self, Self::Healthy)
+    }
+
+    pub fn is_liquidation(&self) -> bool {
+        matches!(self, Self::Liquidation(..))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[near(serializers = [borsh, json])]
+pub enum LiquidationReason {
+    Undercollateralization,
+    Expiration,
 }
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,6 +58,7 @@ impl<T: AssetClass> FeeRecord<T> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[near(serializers = [borsh, json])]
 pub struct BorrowPosition {
+    pub started_at_block_timestamp_ms: Option<U64>,
     pub collateral_asset_deposit: CollateralAssetAmount,
     borrow_asset_principal: BorrowAssetAmount,
     pub borrow_asset_fees: FeeRecord<BorrowAsset>,
@@ -50,6 +68,7 @@ pub struct BorrowPosition {
 impl BorrowPosition {
     pub fn new(block_height: u64) -> Self {
         Self {
+            started_at_block_timestamp_ms: None,
             collateral_asset_deposit: 0.into(),
             borrow_asset_principal: 0.into(),
             borrow_asset_fees: FeeRecord::new(block_height),
@@ -88,7 +107,16 @@ impl BorrowPosition {
         self.collateral_asset_deposit.split(amount)
     }
 
-    pub fn increase_borrow_asset_principal(&mut self, amount: BorrowAssetAmount) -> Option<()> {
+    pub fn increase_borrow_asset_principal(
+        &mut self,
+        amount: BorrowAssetAmount,
+        block_timestamp_ms: u64,
+    ) -> Option<()> {
+        if self.started_at_block_timestamp_ms.is_none()
+            || self.get_total_borrow_asset_liability().is_zero()
+        {
+            self.started_at_block_timestamp_ms = Some(block_timestamp_ms.into());
+        }
         self.borrow_asset_principal.join(amount)
     }
 
@@ -105,6 +133,11 @@ impl BorrowPosition {
         let amount_to_principal = self.borrow_asset_principal.min(amount);
         amount.split(amount_to_principal);
         self.borrow_asset_principal.split(amount_to_principal);
+
+        if self.borrow_asset_principal.is_zero() {
+            // fully paid off
+            self.started_at_block_timestamp_ms = None;
+        }
 
         LiabilityReduction {
             amount_to_fees,

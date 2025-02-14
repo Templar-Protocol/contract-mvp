@@ -2,7 +2,7 @@ use near_sdk::{json_types::U64, near, AccountId};
 
 use crate::{
     asset::{BorrowAsset, BorrowAssetAmount, CollateralAsset, FungibleAsset},
-    borrow::BorrowPosition,
+    borrow::{BorrowPosition, BorrowStatus, LiquidationReason},
     fee::{Fee, TimeBasedFee},
     rational::{Fraction, Rational},
 };
@@ -42,7 +42,39 @@ pub struct MarketConfiguration {
 }
 
 impl MarketConfiguration {
-    pub fn is_healthy(
+    pub fn borrow_status(
+        &self,
+        borrow_position: &BorrowPosition,
+        oracle_price_proof: OraclePriceProof,
+        block_timestamp_ms: u64,
+    ) -> BorrowStatus {
+        if !self.is_within_minimum_collateral_ratio(borrow_position, oracle_price_proof) {
+            return BorrowStatus::Liquidation(LiquidationReason::Undercollateralization);
+        }
+
+        if !self.is_within_maximum_borrow_duration(borrow_position, block_timestamp_ms) {
+            return BorrowStatus::Liquidation(LiquidationReason::Expiration);
+        }
+
+        BorrowStatus::Healthy
+    }
+
+    fn is_within_maximum_borrow_duration(
+        &self,
+        borrow_position: &BorrowPosition,
+        block_timestamp_ms: u64,
+    ) -> bool {
+        if let Some(U64(maximum_duration_ms)) = self.maximum_borrow_duration_ms {
+            borrow_position
+                .started_at_block_timestamp_ms
+                .and_then(|U64(started_at_ms)| block_timestamp_ms.checked_sub(started_at_ms))
+                .map_or(true, |duration_ms| duration_ms <= maximum_duration_ms)
+        } else {
+            true
+        }
+    }
+
+    pub fn is_within_minimum_collateral_ratio(
         &self,
         borrow_position: &BorrowPosition,
         OraclePriceProof {
