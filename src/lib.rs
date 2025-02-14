@@ -263,6 +263,14 @@ impl MarketExternalInterface for Contract {
         oracle_price_proof: OraclePriceProof,
     ) -> Promise {
         require!(!amount.is_zero(), "Borrow amount must be greater than zero");
+        require!(
+            amount >= self.configuration.minimum_borrow_amount,
+            "Borrow amount is smaller than minimum allowed",
+        );
+        require!(
+            amount <= self.configuration.maximum_borrow_amount,
+            "Borrow amount is greater than maximum allowed",
+        );
 
         let account_id = env::predecessor_account_id();
 
