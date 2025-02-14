@@ -507,7 +507,7 @@ pub async fn deploy_ft(
 
 pub struct SetupEverything {
     pub c: TestController,
-    pub owner_user: Account,
+    pub liquidator_user: Account,
     pub supply_user: Account,
     pub borrow_user: Account,
     pub protocol_yield_user: Account,
@@ -520,7 +520,7 @@ pub async fn setup_everything(
     let worker = near_workspaces::sandbox().await.unwrap();
     accounts!(
         worker,
-        owner_user,
+        liquidator_user,
         supply_user,
         borrow_user,
         protocol_yield_user,
@@ -531,29 +531,29 @@ pub async fn setup_everything(
     let mut config = market_configuration(
         borrow_asset.id().clone(),
         collateral_asset.id().clone(),
-        owner_user.id().clone(),
+        liquidator_user.id().clone(),
         YieldWeights::new_with_supply_weight(8)
             .with_static(protocol_yield_user.id().clone(), 1)
             .with_static(insurance_yield_user.id().clone(), 1),
     );
     customize_market_configuration(&mut config);
-    let contract = setup_market(&worker, config).await;
-    let borrow_asset = deploy_ft(
-        borrow_asset,
-        "Borrow Asset",
-        "BORROW",
-        supply_user.id(),
-        100000,
-    )
-    .await;
-    let collateral_asset = deploy_ft(
-        collateral_asset,
-        "Collateral Asset",
-        "COLLATERAL",
-        borrow_user.id(),
-        100000,
-    )
-    .await;
+    let (contract, borrow_asset, collateral_asset) = tokio::join!(
+        setup_market(&worker, config),
+        deploy_ft(
+            borrow_asset,
+            "Borrow Asset",
+            "BORROW",
+            supply_user.id(),
+            100000,
+        ),
+        deploy_ft(
+            collateral_asset,
+            "Collateral Asset",
+            "COLLATERAL",
+            borrow_user.id(),
+            100000,
+        ),
+    );
 
     let c = TestController {
         worker,
@@ -573,7 +573,7 @@ pub async fn setup_everything(
 
     SetupEverything {
         c,
-        owner_user,
+        liquidator_user,
         supply_user,
         borrow_user,
         protocol_yield_user,

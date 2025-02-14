@@ -21,11 +21,11 @@ fn gen_config() {
 async fn test_happy() {
     let SetupEverything {
         c,
-        owner_user: _,
         supply_user,
         borrow_user,
         protocol_yield_user,
         insurance_yield_user,
+        ..
     } = setup_everything(|_| {}).await;
 
     let configuration = c.get_configuration().await;
