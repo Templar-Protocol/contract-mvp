@@ -21,6 +21,7 @@ pub const EQUAL_PRICE: OraclePriceProof = OraclePriceProof {
 };
 
 pub struct TestController {
+    pub worker: Worker<Sandbox>,
     pub contract: Contract,
     pub borrow_asset: Contract,
     pub collateral_asset: Contract,
@@ -555,6 +556,7 @@ pub async fn setup_everything(
     .await;
 
     let c = TestController {
+        worker,
         contract,
         collateral_asset,
         borrow_asset,

@@ -295,7 +295,7 @@ impl Market {
             .borrow_asset_fees
             .accumulate_fees(fees, env::block_height());
         borrow_position
-            .increase_borrow_asset_principal(amount)
+            .increase_borrow_asset_principal(amount, env::block_timestamp_ms())
             .unwrap_or_else(|| env::panic_str("Increase borrow asset principal overflow"));
     }
 
@@ -407,9 +407,13 @@ impl Market {
             return false;
         };
 
-        !self
-            .configuration
-            .is_healthy(&borrow_position, oracle_price_proof)
+        self.configuration
+            .borrow_status(
+                &borrow_position,
+                oracle_price_proof,
+                env::block_timestamp_ms(),
+            )
+            .is_liquidation()
     }
 
     pub fn record_full_liquidation(
