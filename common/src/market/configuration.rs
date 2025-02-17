@@ -38,7 +38,7 @@ pub struct MarketConfiguration {
     /// NEAR, a "maximum liquidator spread" of 10% would mean that a liquidator
     /// could liquidate this borrow by sending 109USDC, netting the liquidator
     /// ($110 - $100) * 10% = $1 of NEAR.
-    pub maximum_liquidator_spread: Rational<u16>,
+    pub maximum_liquidator_spread: Fraction<u16>,
 }
 
 impl MarketConfiguration {
@@ -120,7 +120,7 @@ mod tests {
                 yield_weights: YieldWeights::new_with_supply_weight(8)
                     .with_static("protocol".parse().unwrap(), 1)
                     .with_static("insurance".parse().unwrap(), 1),
-                maximum_liquidator_spread: Rational::new(5, 100),
+                maximum_liquidator_spread: Fraction::new(5, 100).unwrap(),
             })
             .unwrap()
         );

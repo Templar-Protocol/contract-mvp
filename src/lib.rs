@@ -171,16 +171,41 @@ impl FungibleTokenReceiver for Contract {
                     "Borrow position cannot be liquidated",
                 );
 
-                // TODO: Implement `maximum_liquidator_spread` here, since
-                // we have the price data available in `oracle_price_proof`.
-                self.record_full_liquidation(&mut borrow_position, amount);
+                // minimum_acceptable_amount = collateral_amount * (1 - maximum_liquidator_spread) * collateral_price / borrow_price
+                let minimum_acceptable_amount: BorrowAssetAmount = self
+                    .configuration
+                    .maximum_liquidator_spread
+                    .complement()
+                    .upcast::<u128>()
+                    .checked_mul(oracle_price_proof.collateral_asset_price)
+                    .and_then(|x| x.checked_div(oracle_price_proof.borrow_asset_price))
+                    .and_then(|x| {
+                        x.checked_scalar_mul(borrow_position.collateral_asset_deposit.as_u128())
+                    })
+                    .and_then(|x| x.ceil())
+                    .unwrap() // TODO: Eliminate .unwrap()
+                    .into();
+
+                require!(
+                    amount >= minimum_acceptable_amount,
+                    "Too little attached to liquidate",
+                );
+
+                self.record_liquidation_lock(&mut borrow_position);
 
                 self.borrow_positions.insert(&account_id, &borrow_position);
 
-                // TODO: (cont'd from above) This would allow us to calculate
-                // the amount that "should" be recovered and refund the
-                // liquidator any excess.
-                PromiseOrValue::Value(U128(0))
+                env::log_str("locked record and sending tokens");
+
+                PromiseOrValue::Promise(
+                    self.configuration
+                        .collateral_asset
+                        .transfer(sender_id, borrow_position.collateral_asset_deposit)
+                        .then(
+                            Self::ext(env::current_account_id())
+                                .after_liquidate(account_id, amount),
+                        ),
+                )
             }
         }
     }
@@ -655,6 +680,46 @@ impl Contract {
                     self.record_supply_position_borrow_asset_deposit(&mut supply_position, amount);
                     self.supply_positions.insert(&account, &supply_position);
                 }
+            }
+        }
+    }
+
+    /// Called during liquidation process; checks whether the transfer of
+    /// collateral to the liquidator was successful.
+    #[private]
+    pub fn after_liquidate(
+        &mut self,
+        account_id: AccountId,
+        borrow_asset_amount: BorrowAssetAmount,
+    ) -> U128 {
+        env::log_str("inside of after_liquidate");
+        require!(env::promise_results_count() == 1);
+
+        let mut borrow_position = self.borrow_positions.get(&account_id).unwrap_or_else(|| {
+            env::panic_str("Invariant violation: Liquidation of nonexistent position.")
+        });
+
+        match env::promise_result(0) {
+            PromiseResult::Successful(_) => {
+                env::log_str("transfer was successful");
+                self.record_full_liquidation(&mut borrow_position, borrow_asset_amount);
+                U128(0)
+            }
+            PromiseResult::Failed => {
+                env::log_str("transfer was not successful");
+                // Somehow transfer of collateral failed. This could mean:
+                //
+                // 1. Somehow the contract does not have enough collateral
+                //  available. This would be indicative of a *fundamental flaw*
+                //  in the contract (i.e. this should never happen).
+                //
+                // 2. More likely, in a multichain context, communication
+                //  broke down somewhere between the signer and the remote RPC.
+                //  Could be as simple as a nonce sync issue. Should just wait
+                //  and try again later.
+                self.record_liquidation_unlock(&mut borrow_position);
+                env::panic_str("collateral transfer failed");
+                U128(borrow_asset_amount.as_u128())
             }
         }
     }

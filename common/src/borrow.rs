@@ -63,6 +63,7 @@ pub struct BorrowPosition {
     borrow_asset_principal: BorrowAssetAmount,
     pub borrow_asset_fees: FeeRecord<BorrowAsset>,
     pub temporary_lock: BorrowAssetAmount,
+    pub liquidation_lock: bool,
 }
 
 impl BorrowPosition {
@@ -73,7 +74,17 @@ impl BorrowPosition {
             borrow_asset_principal: 0.into(),
             borrow_asset_fees: FeeRecord::new(block_height),
             temporary_lock: 0.into(),
+            liquidation_lock: false,
         }
+    }
+
+    pub fn full_liquidation(&mut self, block_timestamp_ms: u64) {
+        self.liquidation_lock = false;
+        self.started_at_block_timestamp_ms = None;
+        self.collateral_asset_deposit = 0.into();
+        self.borrow_asset_principal = 0.into();
+        self.borrow_asset_fees.total = 0.into();
+        self.borrow_asset_fees.last_updated_block_height = block_timestamp_ms.into();
     }
 
     pub fn get_borrow_asset_principal(&self) -> BorrowAssetAmount {
@@ -123,7 +134,11 @@ impl BorrowPosition {
     pub(crate) fn reduce_borrow_asset_liability(
         &mut self,
         mut amount: BorrowAssetAmount,
-    ) -> LiabilityReduction {
+    ) -> Result<LiabilityReduction, error::LiquidationLockError> {
+        if self.liquidation_lock {
+            return Err(error::LiquidationLockError);
+        }
+
         // No bounds checks necessary here: the min() call prevents underflow.
 
         let amount_to_fees = self.borrow_asset_fees.total.min(amount);
@@ -139,11 +154,11 @@ impl BorrowPosition {
             self.started_at_block_timestamp_ms = None;
         }
 
-        LiabilityReduction {
+        Ok(LiabilityReduction {
             amount_to_fees,
             amount_to_principal,
             amount_remaining: amount,
-        }
+        })
     }
 }
 
@@ -151,4 +166,12 @@ pub struct LiabilityReduction {
     pub amount_to_fees: BorrowAssetAmount,
     pub amount_to_principal: BorrowAssetAmount,
     pub amount_remaining: BorrowAssetAmount,
+}
+
+pub mod error {
+    use thiserror::Error;
+
+    #[derive(Error, Debug)]
+    #[error("This position is currently being liquidated.")]
+    pub struct LiquidationLockError;
 }

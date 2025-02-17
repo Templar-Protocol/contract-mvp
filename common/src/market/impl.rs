@@ -304,7 +304,9 @@ impl Market {
         borrow_position: &mut BorrowPosition,
         amount: BorrowAssetAmount,
     ) {
-        let liability_reduction = borrow_position.reduce_borrow_asset_liability(amount);
+        let liability_reduction = borrow_position
+            .reduce_borrow_asset_liability(amount)
+            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
         require!(
             liability_reduction.amount_remaining.is_zero(),
@@ -416,15 +418,24 @@ impl Market {
             .is_liquidation()
     }
 
+    pub fn record_liquidation_lock(&mut self, borrow_position: &mut BorrowPosition) {
+        borrow_position.liquidation_lock = true;
+    }
+
+    pub fn record_liquidation_unlock(&mut self, borrow_position: &mut BorrowPosition) {
+        borrow_position.liquidation_lock = false;
+    }
+
     pub fn record_full_liquidation(
         &mut self,
         borrow_position: &mut BorrowPosition,
         mut recovered_amount: BorrowAssetAmount,
     ) {
-        if recovered_amount
-            .split(borrow_position.get_borrow_asset_principal())
-            .is_some()
-        {
+        let principal = borrow_position.get_borrow_asset_principal();
+        borrow_position.full_liquidation(env::block_timestamp_ms());
+
+        // TODO: Is it correct to only care about the original principal here?
+        if recovered_amount.split(principal).is_some() {
             // distribute yield
             self.record_borrow_asset_yield_distribution(recovered_amount);
         } else {

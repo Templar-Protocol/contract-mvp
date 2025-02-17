@@ -3,10 +3,9 @@ use test_utils::*;
 use tokio::join;
 
 #[test]
-#[ignore = "generates a dummy config"]
 fn gen_config() {
     println!(
-        "{}",
+        "{{\"configuration\":{}}}",
         near_sdk::serde_json::to_string(&market_configuration(
             "usdt.fakes.testnet".parse().unwrap(),
             "wrap.testnet".parse().unwrap(),

@@ -30,6 +30,10 @@ impl<T: Div<Output = T> + BitXor<Output = T> + Sub<Output = T> + Copy + Eq + Ord
         Self(a, b).simplify()
     }
 
+    pub const fn new_const(a: T, b: T) -> Self {
+        Self(a, b)
+    }
+
     pub fn simplify(self) -> Self {
         let Self(mut n, mut d) = self;
 
