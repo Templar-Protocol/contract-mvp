@@ -1,5 +1,9 @@
 use rstest::rstest;
-use templar_common::{fee::Fee, market::OraclePriceProof, rational::Rational};
+use templar_common::{
+    fee::Fee,
+    market::OraclePriceProof,
+    rational::{Fraction, Rational},
+};
 use test_utils::*;
 
 #[tokio::test]
@@ -128,6 +132,82 @@ async fn successful_liquidation_good_debt_under_mcr(
                 yield_amount * 1 / 10,
             );
         },
+    );
+}
+
+#[rstest]
+#[case(120, 5, 0)]
+#[case(120, 5, 2)]
+#[case(120, 5, 5)]
+#[case(110, 2, 1)]
+#[case(150, 33, 32)]
+#[tokio::test]
+async fn successful_liquidation_with_spread(
+    #[case] mcr: u16,
+    #[case] maximum_spread_pct: u16,
+    #[case] spread_pct: u16,
+) {
+    assert!(spread_pct <= maximum_spread_pct);
+
+    let maximum_liquidator_spread = Fraction::new(maximum_spread_pct, 100).unwrap();
+    let target_spread = Fraction::new(spread_pct, 100).unwrap();
+    let mcr = Rational::new(mcr, 100);
+
+    let SetupEverything {
+        c,
+        liquidator_user,
+        supply_user,
+        borrow_user,
+        ..
+    } = setup_everything(|config| {
+        config.minimum_collateral_ratio_per_borrow = mcr;
+        config.maximum_liquidator_spread = maximum_liquidator_spread;
+    })
+    .await;
+
+    c.supply(&supply_user, 10000).await;
+    c.collateralize(&borrow_user, 2000).await; // 2:1 collateralization
+    c.borrow(&borrow_user, 1000, EQUAL_PRICE).await;
+
+    let collateral_balance_before = c.collateral_asset_balance_of(liquidator_user.id()).await;
+    let borrow_balance_before = c.borrow_asset_balance_of(liquidator_user.id()).await;
+
+    let collateral_asset_price = mcr
+        .upcast::<u128>()
+        .checked_div(
+            Rational::new(201, 100), // 2:1 collateralization + a bit to ensure we're under MCR
+        )
+        .unwrap();
+
+    let liquidation_amount = collateral_asset_price
+        .checked_mul(*target_spread.complement().upcast())
+        .and_then(|x| x.checked_scalar_mul(2000))
+        .and_then(|x| x.ceil())
+        .unwrap();
+
+    c.liquidate(
+        &liquidator_user,
+        borrow_user.id(),
+        liquidation_amount,
+        OraclePriceProof {
+            collateral_asset_price,
+            borrow_asset_price: Rational::<u128>::one(),
+        },
+    )
+    .await;
+
+    let collateral_balance_after = c.collateral_asset_balance_of(liquidator_user.id()).await;
+    let borrow_balance_after = c.borrow_asset_balance_of(liquidator_user.id()).await;
+
+    assert_eq!(
+        collateral_balance_after - collateral_balance_before,
+        2000,
+        "Liquidator should obtain all collateral after a successful liquidation",
+    );
+    assert_eq!(
+        borrow_balance_before - borrow_balance_after,
+        liquidation_amount,
+        "Liquidation should transfer correct amount of tokens",
     );
 }
 
