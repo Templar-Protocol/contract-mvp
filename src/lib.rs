@@ -190,8 +190,6 @@ impl FungibleTokenReceiver for Contract {
 
                 self.borrow_positions.insert(&account_id, &borrow_position);
 
-                env::log_str("locked record and sending tokens");
-
                 PromiseOrValue::Promise(
                     self.configuration
                         .collateral_asset
@@ -687,7 +685,6 @@ impl Contract {
         account_id: AccountId,
         borrow_asset_amount: BorrowAssetAmount,
     ) -> U128 {
-        env::log_str("inside of after_liquidate");
         require!(env::promise_results_count() == 1);
 
         let mut borrow_position = self.borrow_positions.get(&account_id).unwrap_or_else(|| {
@@ -696,12 +693,10 @@ impl Contract {
 
         match env::promise_result(0) {
             PromiseResult::Successful(_) => {
-                env::log_str("transfer was successful");
                 self.record_full_liquidation(&mut borrow_position, borrow_asset_amount);
                 U128(0)
             }
             PromiseResult::Failed => {
-                env::log_str("transfer was not successful");
                 // Somehow transfer of collateral failed. This could mean:
                 //
                 // 1. Somehow the contract does not have enough collateral
@@ -713,7 +708,6 @@ impl Contract {
                 //  Could be as simple as a nonce sync issue. Should just wait
                 //  and try again later.
                 self.record_liquidation_unlock(&mut borrow_position);
-                env::panic_str("collateral transfer failed");
                 U128(borrow_asset_amount.as_u128())
             }
         }
