@@ -3,14 +3,13 @@ use test_utils::*;
 use tokio::join;
 
 #[test]
-#[ignore = "generates a dummy config"]
-fn gen_config() {
+#[ignore = "generates the arguments to a new() call"]
+fn gen_constructor_arguments() {
     println!(
-        "{}",
+        "{{\"configuration\":{}}}",
         near_sdk::serde_json::to_string(&market_configuration(
             "usdt.fakes.testnet".parse().unwrap(),
             "wrap.testnet".parse().unwrap(),
-            "liquidator".parse().unwrap(),
             YieldWeights::new_with_supply_weight(1)
         ))
         .unwrap()
@@ -21,11 +20,11 @@ fn gen_config() {
 async fn test_happy() {
     let SetupEverything {
         c,
-        owner_user: _,
         supply_user,
         borrow_user,
         protocol_yield_user,
         insurance_yield_user,
+        ..
     } = setup_everything(|_| {}).await;
 
     let configuration = c.get_configuration().await;
