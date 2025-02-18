@@ -3,6 +3,7 @@ use test_utils::*;
 use tokio::join;
 
 #[test]
+#[ignore = "generates a test configuration"]
 fn gen_config() {
     println!(
         "{{\"configuration\":{}}}",

@@ -1,4 +1,5 @@
-use templar_common::rational::Rational;
+use rstest::rstest;
+use templar_common::{fee::Fee, market::OraclePriceProof, rational::Rational};
 use test_utils::*;
 
 #[tokio::test]
@@ -45,26 +46,37 @@ async fn successful_liquidation_totally_underwater() {
     );
 }
 
+// Caveat to this test: Make sure that the yield distribution value is
+// divisible by 10 for easy maths.
+#[rstest]
+#[case(110, 5000, 2450, 50, 2500)]
+#[case(120, 1250, 1000, 88, 1100)] // fmv
+#[case(120, 1250, 1000, 88, 1070)] // liquidator spread of ~2.7%
 #[tokio::test]
-async fn successful_liquidation_good_debt_under_mcr() {
+async fn successful_liquidation_good_debt_under_mcr(
+    #[case] mcr: u16,
+    #[case] collateral_amount: u128,
+    #[case] borrow_amount: u128,
+    #[case] collateral_asset_price_pct: u128,
+    #[case] liquidation_amount: u128,
+) {
     let SetupEverything {
         c,
         liquidator_user,
         supply_user,
         borrow_user,
+        protocol_yield_user,
+        insurance_yield_user,
         ..
     } = setup_everything(|config| {
-        config.minimum_collateral_ratio_per_borrow = Rational::new(110, 100);
+        config.borrow_origination_fee = Fee::zero();
+        config.minimum_collateral_ratio_per_borrow = Rational::new(mcr, 100);
     })
     .await;
 
-    c.supply(&supply_user, 1000).await;
-    c.collateralize(&borrow_user, 500).await;
-    c.borrow(&borrow_user, 245, EQUAL_PRICE).await;
-
-    // when collateral halves in price, that means value will go 500->250.
-    // collateralization: 250 / 245 ~= 102%
-    // still good debt but under MCR (110%).
+    c.supply(&supply_user, 10000).await;
+    c.collateralize(&borrow_user, collateral_amount).await;
+    c.borrow(&borrow_user, borrow_amount, EQUAL_PRICE).await;
 
     let collateral_balance_before = c.collateral_asset_balance_of(liquidator_user.id()).await;
     let borrow_balance_before = c.borrow_asset_balance_of(liquidator_user.id()).await;
@@ -72,8 +84,11 @@ async fn successful_liquidation_good_debt_under_mcr() {
     c.liquidate(
         &liquidator_user,
         borrow_user.id(),
-        250, // still liquidate at fmv for this test
-        COLLATERAL_HALF_PRICE,
+        liquidation_amount,
+        OraclePriceProof {
+            collateral_asset_price: Rational::new(collateral_asset_price_pct, 100),
+            borrow_asset_price: Rational::<u128>::one(),
+        },
     )
     .await;
 
@@ -82,16 +97,38 @@ async fn successful_liquidation_good_debt_under_mcr() {
 
     assert_eq!(
         collateral_balance_after - collateral_balance_before,
-        500,
+        collateral_amount,
         "Liquidator should obtain all collateral after a successful liquidation",
     );
     assert_eq!(
         borrow_balance_before - borrow_balance_after,
-        250,
+        liquidation_amount,
         "Liquidation should transfer correct amount of tokens",
     );
 
-    // TODO: test yield distributions
+    let yield_amount = liquidation_amount - borrow_amount;
+
+    tokio::join!(
+        async {
+            c.harvest_yield(&supply_user).await;
+            let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
+            assert_eq!(
+                supply_position.borrow_asset_yield.amount.as_u128(),
+                yield_amount * 8 / 10,
+            );
+        },
+        async {
+            let protocol_yield = c.get_static_yield(protocol_yield_user.id()).await.unwrap();
+            assert_eq!(protocol_yield.borrow_asset.as_u128(), yield_amount * 1 / 10);
+        },
+        async {
+            let insurance_yield = c.get_static_yield(insurance_yield_user.id()).await.unwrap();
+            assert_eq!(
+                insurance_yield.borrow_asset.as_u128(),
+                yield_amount * 1 / 10,
+            );
+        },
+    );
 }
 
 #[tokio::test]
