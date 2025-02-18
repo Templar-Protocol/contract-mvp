@@ -3,14 +3,13 @@ use test_utils::*;
 use tokio::join;
 
 #[test]
-#[ignore = "generates a test configuration"]
-fn gen_config() {
+#[ignore = "generates the arguments to a new() call"]
+fn gen_constructor_arguments() {
     println!(
         "{{\"configuration\":{}}}",
         near_sdk::serde_json::to_string(&market_configuration(
             "usdt.fakes.testnet".parse().unwrap(),
             "wrap.testnet".parse().unwrap(),
-            "liquidator".parse().unwrap(),
             YieldWeights::new_with_supply_weight(1)
         ))
         .unwrap()

@@ -150,11 +150,6 @@ impl FungibleTokenReceiver for Contract {
             }) => {
                 let amount = use_borrow_asset();
 
-                require!(
-                    sender_id == self.configuration.liquidator_account_id,
-                    "Account not authorized to perform liquidations",
-                );
-
                 let mut borrow_position = self
                     .borrow_positions
                     .get(&account_id)

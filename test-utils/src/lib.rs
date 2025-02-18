@@ -510,14 +510,12 @@ macro_rules! accounts {
 pub fn market_configuration(
     borrow_asset_id: AccountId,
     collateral_asset_id: AccountId,
-    liquidator_account_id: AccountId,
     yield_weights: YieldWeights,
 ) -> MarketConfiguration {
     MarketConfiguration {
         borrow_asset: FungibleAsset::nep141(borrow_asset_id),
         collateral_asset: FungibleAsset::nep141(collateral_asset_id),
         balance_oracle_account_id: "balance_oracle".parse().unwrap(),
-        liquidator_account_id,
         minimum_collateral_ratio_per_borrow: Rational::new(120, 100),
         maximum_borrow_asset_usage_ratio: Fraction::new(99, 100).unwrap(),
         borrow_origination_fee: Fee::Proportional(Rational::new(10, 100)),
@@ -605,7 +603,6 @@ pub async fn setup_everything(
     let mut config = market_configuration(
         borrow_asset.id().clone(),
         collateral_asset.id().clone(),
-        liquidator_user.id().clone(),
         YieldWeights::new_with_supply_weight(8)
             .with_static(protocol_yield_user.id().clone(), 1)
             .with_static(insurance_yield_user.id().clone(), 1),

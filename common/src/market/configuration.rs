@@ -15,7 +15,6 @@ pub struct MarketConfiguration {
     pub borrow_asset: FungibleAsset<BorrowAsset>,
     pub collateral_asset: FungibleAsset<CollateralAsset>,
     pub balance_oracle_account_id: AccountId,
-    pub liquidator_account_id: AccountId,
     pub minimum_collateral_ratio_per_borrow: Rational<u16>,
     /// How much of the deposited principal may be lent out (up to 100%)?
     /// This is a matter of protection for supply providers.
@@ -108,7 +107,6 @@ mod tests {
                 borrow_asset: FungibleAsset::nep141("usdt.fakes.testnet".parse().unwrap()),
                 collateral_asset: FungibleAsset::nep141("wrap.testnet".parse().unwrap()),
                 balance_oracle_account_id: "root.testnet".parse().unwrap(),
-                liquidator_account_id: "templar-in-training.testnet".parse().unwrap(),
                 minimum_collateral_ratio_per_borrow: Rational::new(120, 100),
                 maximum_borrow_asset_usage_ratio: Fraction::new(99, 100).unwrap(),
                 borrow_origination_fee: Fee::Proportional(Rational::new(1, 100)),
