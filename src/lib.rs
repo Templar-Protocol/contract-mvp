@@ -1,7 +1,6 @@
-use std::{
-    ops::{Deref, DerefMut},
-    usize,
-};
+#![allow(clippy::needless_pass_by_value)]
+
+use std::ops::{Deref, DerefMut};
 
 use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
 use near_sdk::{
@@ -220,13 +219,9 @@ impl MarketExternalInterface for Contract {
         }
     }
 
-    fn report_remote_asset_balance(&mut self, address: String, asset: String, amount: U128) {
-        todo!()
-    }
-
-    fn list_borrows(&self, offset: Option<U64>, count: Option<U64>) -> Vec<AccountId> {
-        let offset = offset.map_or(0, |o| o.0 as usize);
-        let count = count.map_or(usize::MAX, |c| c.0 as usize);
+    fn list_borrows(&self, offset: Option<u32>, count: Option<u32>) -> Vec<AccountId> {
+        let offset = offset.map_or(0, |o| o as usize);
+        let count = count.map_or(usize::MAX, |c| c as usize);
         self.borrow_positions
             .keys()
             .skip(offset)
@@ -234,9 +229,9 @@ impl MarketExternalInterface for Contract {
             .collect()
     }
 
-    fn list_supplys(&self, offset: Option<U64>, count: Option<U64>) -> Vec<AccountId> {
-        let offset = offset.map_or(0, |o| o.0 as usize);
-        let count = count.map_or(usize::MAX, |c| c.0 as usize);
+    fn list_supplys(&self, offset: Option<u32>, count: Option<u32>) -> Vec<AccountId> {
+        let offset = offset.map_or(0, |o| o as usize);
+        let count = count.map_or(usize::MAX, |c| c as usize);
         self.supply_positions
             .keys()
             .skip(offset)
@@ -253,27 +248,13 @@ impl MarketExternalInterface for Contract {
         account_id: AccountId,
         oracle_price_proof: OraclePriceProof,
     ) -> Option<BorrowStatus> {
-        let Some(borrow_position) = self.borrow_positions.get(&account_id) else {
-            return None;
-        };
+        let borrow_position = self.borrow_positions.get(&account_id)?;
 
         Some(self.configuration.borrow_status(
             &borrow_position,
             oracle_price_proof,
             env::block_timestamp_ms(),
         ))
-    }
-
-    fn get_collateral_asset_deposit_address_for(
-        &self,
-        account_id: AccountId,
-        collateral_asset: String,
-    ) -> String {
-        todo!()
-    }
-
-    fn initialize_borrow(&mut self, borrow_asset_amount: U128, collateral_asset_amount: U128) {
-        todo!()
     }
 
     fn borrow(
@@ -298,6 +279,7 @@ impl MarketExternalInterface for Contract {
             .borrow_asset
             .current_account_balance()
             .and(
+                #[allow(clippy::unwrap_used)]
                 // TODO: Replace with call to actual price oracle.
                 Self::ext(env::current_account_id())
                     .return_static(serde_json::to_value(oracle_price_proof).unwrap()),
@@ -330,7 +312,7 @@ impl MarketExternalInterface for Contract {
                     oracle_price_proof.unwrap_or_else(|| env::panic_str("Must provide price")),
                 ),
                 "Borrow must still be above MCR after collateral withdrawal.",
-            )
+            );
         }
 
         self.borrow_positions.insert(&account_id, &borrow_position);
@@ -375,9 +357,10 @@ impl MarketExternalInterface for Contract {
     }
 
     fn execute_next_supply_withdrawal_request(&mut self) -> PromiseOrValue<()> {
-        let Some((account_id, amount)) = self.try_lock_next_withdrawal_request().unwrap_or_else(|_| {
-            env::panic_str("Could not lock withdrawal queue. The queue may be empty or a withdrawal may be in-flight.")
-        }) else {
+        let Some((account_id, amount)) = self
+            .try_lock_next_withdrawal_request()
+            .unwrap_or_else(|e| env::panic_str(&e.to_string()))
+        else {
             env::log_str("Supply position does not exist: skipping.");
             return PromiseOrValue::Value(());
         };
@@ -397,7 +380,7 @@ impl MarketExternalInterface for Contract {
         &self,
         account_id: AccountId,
     ) -> Option<WithdrawalRequestStatus> {
-        self.withdrawal_queue.get_request_status(account_id)
+        self.withdrawal_queue.get_request_status(&account_id)
     }
 
     fn get_supply_withdrawal_queue_status(&self) -> WithdrawalQueueStatus {
@@ -427,7 +410,12 @@ impl MarketExternalInterface for Contract {
             |amount| amount.0,
         );
 
-        let withdrawn = supply_position.borrow_asset_yield.withdraw(amount).unwrap();
+        let withdrawn = supply_position
+            .borrow_asset_yield
+            .withdraw(amount)
+            .unwrap_or_else(|| {
+                env::panic_str("Attempt to withdraw more yield than has accumulated")
+            });
         if withdrawn.is_zero() {
             env::panic_str("No rewards can be withdrawn");
         }
@@ -474,24 +462,24 @@ impl MarketExternalInterface for Contract {
 
         self.static_yield.insert(&predecessor, &static_yield_record);
 
-        let borrow_promise = if !borrow_asset_amount.is_zero() {
+        let borrow_promise = if borrow_asset_amount.is_zero() {
+            None
+        } else {
             Some(
                 self.configuration
                     .borrow_asset
                     .transfer(predecessor.clone(), borrow_asset_amount),
             )
-        } else {
-            None
         };
 
-        let collateral_promise = if !collateral_asset_amount.is_zero() {
+        let collateral_promise = if collateral_asset_amount.is_zero() {
+            None
+        } else {
             Some(
                 self.configuration
                     .collateral_asset
                     .transfer(predecessor.clone(), collateral_asset_amount),
             )
-        } else {
-            None
         };
 
         match (borrow_promise, collateral_promise) {

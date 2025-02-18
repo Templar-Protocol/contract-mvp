@@ -1,7 +1,4 @@
-use near_sdk::{
-    json_types::{U128, U64},
-    AccountId, Promise, PromiseOrValue,
-};
+use near_sdk::{json_types::U128, AccountId, Promise, PromiseOrValue};
 
 use crate::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
@@ -29,19 +26,13 @@ pub trait MarketExternalInterface {
     ) -> BorrowAssetMetrics;
 
     // TODO: Decide how to work with remote balances:
-
     // Option 1:
-    // Balance oracle calls this function directly.
-    fn report_remote_asset_balance(&mut self, address: String, asset: String, amount: U128);
-
+    // Balance oracle calls a function directly.
     // Option 2: Balance oracle creates/maintains separate NEP-141-ish contracts that track remote
     // balances.
 
-    fn list_borrows(&self, offset: Option<U64>, count: Option<U64>) -> Vec<AccountId>;
-    fn list_supplys(&self, offset: Option<U64>, count: Option<U64>) -> Vec<AccountId>;
-
-    /// This function does need to retrieve a "proof-of-price" from somewhere, e.g. oracle.
-    // fn liquidate(&mut self, account_id: AccountId, meta: ()) -> ();
+    fn list_borrows(&self, offset: Option<u32>, count: Option<u32>) -> Vec<AccountId>;
+    fn list_supplys(&self, offset: Option<u32>, count: Option<u32>) -> Vec<AccountId>;
 
     // ==================
     // BORROW FUNCTIONS
@@ -59,14 +50,7 @@ pub trait MarketExternalInterface {
         account_id: AccountId,
         oracle_price_proof: OraclePriceProof,
     ) -> Option<BorrowStatus>;
-    /// Works for both registered and unregistered accounts.
-    fn get_collateral_asset_deposit_address_for(
-        &self,
-        account_id: AccountId,
-        collateral_asset: String,
-    ) -> String;
 
-    fn initialize_borrow(&mut self, borrow_asset_amount: U128, collateral_asset_amount: U128);
     fn borrow(
         &mut self,
         amount: BorrowAssetAmount,

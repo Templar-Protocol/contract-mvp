@@ -84,11 +84,11 @@ impl MarketConfiguration {
         let scaled_collateral_value = borrow_position.collateral_asset_deposit.as_u128()
             * collateral_asset_price.numerator()
             * borrow_asset_price.denominator()
-            * self.minimum_collateral_ratio_per_borrow.denominator() as u128;
+            * u128::from(self.minimum_collateral_ratio_per_borrow.denominator());
         let scaled_borrow_value = borrow_position.get_total_borrow_asset_liability().as_u128()
             * borrow_asset_price.numerator()
             * collateral_asset_price.denominator()
-            * self.minimum_collateral_ratio_per_borrow.numerator() as u128;
+            * u128::from(self.minimum_collateral_ratio_per_borrow.numerator());
 
         scaled_collateral_value >= scaled_borrow_value
     }

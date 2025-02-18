@@ -21,7 +21,7 @@ async fn borrow_within_maximum_usage_ratio(#[case] percent: u16) {
 
     c.supply(&supply_user, 1000).await;
     c.collateralize(&borrow_user, 2000).await;
-    c.borrow(&borrow_user, percent as u128 * 10, EQUAL_PRICE)
+    c.borrow(&borrow_user, u128::from(percent) * 10, EQUAL_PRICE)
         .await;
 }
 
@@ -45,6 +45,6 @@ async fn borrow_exceeds_maximum_usage_ratio(#[case] percent: u16) {
 
     c.supply(&supply_user, 1000).await;
     c.collateralize(&borrow_user, 2000).await;
-    c.borrow(&borrow_user, percent as u128 * 10 + 1, EQUAL_PRICE)
+    c.borrow(&borrow_user, u128::from(percent) * 10 + 1, EQUAL_PRICE)
         .await;
 }

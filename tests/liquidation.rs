@@ -123,14 +123,11 @@ async fn successful_liquidation_good_debt_under_mcr(
         },
         async {
             let protocol_yield = c.get_static_yield(protocol_yield_user.id()).await.unwrap();
-            assert_eq!(protocol_yield.borrow_asset.as_u128(), yield_amount * 1 / 10);
+            assert_eq!(protocol_yield.borrow_asset.as_u128(), yield_amount / 10);
         },
         async {
             let insurance_yield = c.get_static_yield(insurance_yield_user.id()).await.unwrap();
-            assert_eq!(
-                insurance_yield.borrow_asset.as_u128(),
-                yield_amount * 1 / 10,
-            );
+            assert_eq!(insurance_yield.borrow_asset.as_u128(), yield_amount / 10,);
         },
     );
 }

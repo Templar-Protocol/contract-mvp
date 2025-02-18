@@ -19,7 +19,7 @@ impl<T: AssetClass> Fee<T> {
 
     pub fn of(&self, amount: FungibleAssetAmount<T>) -> Option<FungibleAssetAmount<T>> {
         match self {
-            Fee::Flat(f) => Some(f.clone()),
+            Fee::Flat(f) => Some(*f),
             Fee::Proportional(rational) => rational
                 .upcast::<u128>()
                 .checked_scalar_mul(amount.as_u128())?
@@ -71,6 +71,12 @@ impl<T: AssetClass> TimeBasedFee<T> {
                 .ceil()
                 .map(Into::into),
             TimeBasedFeeFunction::Logarithmic => Some(
+                // TODO: Seems jank.
+                #[allow(
+                    clippy::cast_sign_loss,
+                    clippy::cast_possible_truncation,
+                    clippy::cast_precision_loss
+                )]
                 (((base_fee.as_u128() as f64 * f64::log2((1 + time - self.duration.0) as f64))
                     / f64::log2((1 + time) as f64))
                 .ceil() as u128)

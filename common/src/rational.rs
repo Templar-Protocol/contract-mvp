@@ -34,6 +34,7 @@ impl<T: Div<Output = T> + BitXor<Output = T> + Sub<Output = T> + Copy + Eq + Ord
         Self(a, b)
     }
 
+    #[must_use]
     pub fn simplify(self) -> Self {
         let Self(mut n, mut d) = self;
 
@@ -46,6 +47,7 @@ impl<T: Div<Output = T> + BitXor<Output = T> + Sub<Output = T> + Copy + Eq + Ord
         Self(n, d)
     }
 
+    #[must_use]
     pub fn reciprocal(self) -> Self {
         Self(self.1, self.0)
     }
@@ -170,6 +172,7 @@ impl<T: Div<Output = T> + BitXor<Output = T> + Sub<Output = T> + Copy + Eq + Ord
     }
 
     /// Calculates `1 - self`.
+    #[must_use]
     pub fn complement(self) -> Self {
         let Self(Rational(a, b)) = self;
         Self(Rational(b - a, b))

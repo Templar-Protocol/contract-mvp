@@ -12,6 +12,15 @@ test-utils = { path = "./test-utils" }
 thiserror = "2.0.11"
 tokio = { version = "1.30.0", features = ["full"] }
 
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+must_use_candidate = "allow"
+large_futures = "allow"
+redundant_closure_for_method_calls = "allow"
+module_name_repetitions = "allow"
+unwrap_used = "warn"
+expect_used = "warn"
+
 [package]
 name = "contract-mvp"
 description = "cargo-near-new-project-description"
@@ -61,3 +70,6 @@ debug = false
 panic = "abort"
 # Opt into extra safety checks on arithmetic operations https://stackoverflow.com/a/64136471/249801
 overflow-checks = true
+
+[lints]
+workspace = true

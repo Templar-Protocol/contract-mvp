@@ -58,6 +58,11 @@ impl WithdrawalQueue {
         self.length
     }
 
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.length == 0
+    }
+
     pub fn get(&self, account_id: &AccountId) -> Option<BorrowAssetAmount> {
         self.entries
             .get(account_id)
@@ -101,16 +106,21 @@ impl WithdrawalQueue {
         }
     }
 
-    pub fn try_lock(&mut self) -> Option<(AccountId, BorrowAssetAmount)> {
+    /// # Errors
+    /// - If the queue is already locked.
+    /// - If the queue is empty.
+    pub fn try_lock(
+        &mut self,
+    ) -> Result<(AccountId, BorrowAssetAmount), error::WithdrawalQueueLockError> {
         if self.is_locked {
-            return None;
+            return Err(error::AlreadyLockedError.into());
         }
 
         if let Some(peek) = self.peek() {
             self.is_locked = true;
-            Some(peek)
+            Ok(peek)
         } else {
-            None
+            Err(error::EmptyError.into())
         }
     }
 
@@ -187,6 +197,7 @@ impl WithdrawalQueue {
         }
     }
 
+    #[allow(clippy::missing_panics_doc)]
     pub fn insert_or_update(&mut self, account_id: &AccountId, amount: BorrowAssetAmount) {
         if let Some(node_id) = self.entries.get(account_id) {
             // update existing
@@ -194,7 +205,12 @@ impl WithdrawalQueue {
         } else {
             // add new
             let node_id = self.next_queue_node_id;
-            self.next_queue_node_id = self.next_queue_node_id.checked_add(1).unwrap(); // assume the collection never processes more than u32::MAX items
+            {
+                #![allow(clippy::unwrap_used)]
+                // assume the collection never processes more than u32::MAX items
+                self.next_queue_node_id = self.next_queue_node_id.checked_add(1).unwrap();
+            }
+
             if let Some(tail_id) = self.queue_tail {
                 self.mut_existing_node(tail_id, |tail| tail.next = Some(node_id));
             }
@@ -204,7 +220,7 @@ impl WithdrawalQueue {
                 prev: self.queue_tail,
                 next: None,
             };
-            if self.queue_head == None {
+            if self.queue_head.is_none() {
                 self.queue_head = Some(node_id);
             }
             self.queue_tail = Some(node_id);
@@ -216,7 +232,7 @@ impl WithdrawalQueue {
 
     pub fn iter(&self) -> WithdrawalQueueIter {
         WithdrawalQueueIter {
-            withdrawal_queue: &self,
+            withdrawal_queue: self,
             next_node_id: self.queue_head,
         }
     }
@@ -233,25 +249,36 @@ impl WithdrawalQueue {
         }
     }
 
-    pub fn get_request_status(&self, account_id: AccountId) -> Option<WithdrawalRequestStatus> {
-        if !self.contains(&account_id) {
+    pub fn get_request_status(&self, account_id: &AccountId) -> Option<WithdrawalRequestStatus> {
+        if !self.contains(account_id) {
             return None;
         }
 
         let mut depth = 0.into();
         for (index, (current_account, amount)) in self.iter().enumerate() {
-            if current_account == account_id {
+            if &current_account == account_id {
                 return Some(WithdrawalRequestStatus {
+                    // The queue's length is u32, so this will never truncate.
+                    #[allow(clippy::cast_possible_truncation)]
                     index: index as u32,
                     depth,
                     amount,
                 });
-            } else {
-                depth.join(amount);
             }
+
+            depth.join(amount);
         }
 
         unreachable!()
+    }
+}
+
+impl<'a> IntoIterator for &'a WithdrawalQueue {
+    type IntoIter = WithdrawalQueueIter<'a>;
+    type Item = (AccountId, BorrowAssetAmount);
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
     }
 }
 
@@ -260,7 +287,7 @@ pub struct WithdrawalQueueIter<'a> {
     next_node_id: Option<NonZeroU32>,
 }
 
-impl<'a> Iterator for WithdrawalQueueIter<'a> {
+impl Iterator for WithdrawalQueueIter<'_> {
     type Item = (AccountId, BorrowAssetAmount);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -288,6 +315,27 @@ pub struct WithdrawalRequestStatus {
 pub struct WithdrawalQueueStatus {
     pub depth: BorrowAssetAmount,
     pub length: u32,
+}
+
+pub mod error {
+    use thiserror::Error;
+
+    #[derive(Error, Debug)]
+    #[error("The withdrawal queue is already locked")]
+    pub struct AlreadyLockedError;
+
+    #[derive(Error, Debug)]
+    #[error("The withdrawal queue is empty")]
+    pub struct EmptyError;
+
+    #[derive(Error, Debug)]
+    #[error("The withdrawal queue could not be locked: {}", .0)]
+    pub enum WithdrawalQueueLockError {
+        #[error(transparent)]
+        AlreadyLocked(#[from] AlreadyLockedError),
+        #[error(transparent)]
+        Empty(#[from] EmptyError),
+    }
 }
 
 #[cfg(test)]
