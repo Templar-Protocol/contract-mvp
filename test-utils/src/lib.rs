@@ -19,6 +19,7 @@ use templar_common::{
     supply::SupplyPosition,
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
 };
+use tokio::sync::OnceCell;
 
 pub const EQUAL_PRICE: OraclePriceProof = OraclePriceProof {
     collateral_asset_price: Rational::<u128>::one(),
@@ -529,13 +530,18 @@ pub fn market_configuration(
     }
 }
 
+pub static WASM_MARKET: OnceCell<Vec<u8>> = OnceCell::const_new();
+pub static WASM_MOCK_FT: OnceCell<Vec<u8>> = OnceCell::const_new();
+
 pub async fn setup_market(
     worker: &Worker<Sandbox>,
     configuration: MarketConfiguration,
 ) -> Contract {
-    let contract_wasm = near_workspaces::compile_project("./").await.unwrap();
+    let wasm = WASM_MARKET
+        .get_or_init(|| async { near_workspaces::compile_project("./").await.unwrap() })
+        .await;
 
-    let contract = worker.dev_deploy(&contract_wasm).await.unwrap();
+    let contract = worker.dev_deploy(wasm).await.unwrap();
     contract
         .call("new")
         .args_json(json!({
@@ -556,10 +562,15 @@ pub async fn deploy_ft(
     owner_id: &AccountIdRef,
     supply: u128,
 ) -> Contract {
-    let wasm = near_workspaces::compile_project("./mock/ft/")
-        .await
-        .unwrap();
-    let contract = account.deploy(&wasm).await.unwrap().unwrap();
+    let wasm = WASM_MOCK_FT
+        .get_or_init(|| async {
+            near_workspaces::compile_project("./mock/ft/")
+                .await
+                .unwrap()
+        })
+        .await;
+
+    let contract = account.deploy(wasm).await.unwrap().unwrap();
     contract
         .call("new")
         .args_json(json!({
