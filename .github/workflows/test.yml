@@ -28,5 +28,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      - name: Run cargo test
-        run: cargo test
+      - name: Install cargo-nextest
+        # https://nexte.st/docs/installation/pre-built-binaries/#linux-x86_64
+        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
+      - name: Run cargo nextest
+        run: cargo nextest run --retries 1
