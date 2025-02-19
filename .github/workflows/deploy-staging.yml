@@ -3,14 +3,14 @@ on:
   pull_request:
 
 jobs:
-  # test:
-  #   uses: ./.github/workflows/test.yml
+  test:
+    uses: ./.github/workflows/test.yml
 
   deploy-staging:
     name: Deploy to staging subaccount
     permissions:
       pull-requests: write
-    # needs: [test]
+    needs: [test]
     runs-on: ubuntu-latest
     env:
       NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID: gh-${{ github.event.number }}.${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_ID }}
