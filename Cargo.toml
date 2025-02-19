@@ -2,7 +2,7 @@
 members = [".", "common", "mock/*", "test-utils"]
 
 [workspace.dependencies]
-near-sdk = { version = "5.7", features = ["unstable", "unit-testing"] }
+near-sdk = { version = "5.7", features = ["unstable"] }
 near-contract-standards = "5.7"
 near-workspaces = { version = "0.16", features = ["unstable"] }
 rstest = { version = "0.24" }
@@ -55,7 +55,7 @@ serde.workspace = true
 templar-common.workspace = true
 
 [dev-dependencies]
-near-sdk.workspace = true
+near-sdk = { workspace = true, features = ["unit-testing"] }
 near-workspaces.workspace = true
 rstest.workspace = true
 test-utils.workspace = true
