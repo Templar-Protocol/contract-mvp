@@ -1,5 +1,3 @@
-use std::{u128, u16};
-
 use near_sdk::{
     collections::{LookupMap, TreeMap, UnorderedMap},
     env, near, require, AccountId, BorshStorageKey, IntoStorageKey,
@@ -9,10 +7,10 @@ use crate::{
     asset::{AssetClass, BorrowAssetAmount, CollateralAssetAmount, FungibleAssetAmount},
     borrow::BorrowPosition,
     market::MarketConfiguration,
-    rational::Rational,
+    rational::Fraction,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
-    withdrawal_queue::WithdrawalQueue,
+    withdrawal_queue::{error::WithdrawalQueueLockError, WithdrawalQueue},
 };
 
 use super::OraclePriceProof;
@@ -96,12 +94,13 @@ impl Market {
         known_available.saturating_sub(must_retain).into()
     }
 
+    /// # Errors
+    /// - If the withdrawal queue is already locked.
+    /// - If the withdrawal queue is empty.
     pub fn try_lock_next_withdrawal_request(
         &mut self,
-    ) -> Result<Option<(AccountId, BorrowAssetAmount)>, ()> {
-        let Some((account_id, requested_amount)) = self.withdrawal_queue.try_lock() else {
-            return Err(());
-        };
+    ) -> Result<Option<(AccountId, BorrowAssetAmount)>, WithdrawalQueueLockError> {
+        let (account_id, requested_amount) = self.withdrawal_queue.try_lock()?;
 
         let Some((amount, mut supply_position)) =
             self.supply_positions
@@ -145,10 +144,11 @@ impl Market {
 
         // First, static yield.
 
-        let total_weight = u16::from(self.configuration.yield_weights.total_weight()) as u128;
+        let total_weight = u128::from(u16::from(self.configuration.yield_weights.total_weight()));
         let total_amount = amount.as_u128();
         if total_weight != 0 {
-            for (account_id, share) in self.configuration.yield_weights.r#static.iter() {
+            for (account_id, share) in &self.configuration.yield_weights.r#static {
+                #[allow(clippy::unwrap_used)]
                 let portion = amount
                     .split(
                         // Safety:
@@ -159,7 +159,7 @@ impl Market {
                         // With 24 decimals, that's about 5,192,376,087 tokens.
                         // TODO: Fix.
                         total_amount
-                            .checked_mul(*share as u128)
+                            .checked_mul(u128::from(*share))
                             .unwrap() // TODO: This one might panic.
                         / total_weight, // This will never panic: is never div0
                     )
@@ -178,6 +178,7 @@ impl Market {
                 //
                 // Otherwise, borrow_asset is implemented incorrectly.
                 // TODO: If that is the case, how to deal?
+                #[allow(clippy::unwrap_used)]
                 yield_record.borrow_asset.join(portion).unwrap();
                 self.static_yield.insert(account_id, &yield_record);
             }
@@ -263,7 +264,7 @@ impl Market {
         borrow_position
             .temporary_lock
             .join(amount)
-            .and_then(|_| borrow_position.temporary_lock.join(fees))
+            .and_then(|()| borrow_position.temporary_lock.join(fees))
             .unwrap_or_else(|| env::panic_str("Borrow position in flight amount overflow"));
     }
 
@@ -304,7 +305,9 @@ impl Market {
         borrow_position: &mut BorrowPosition,
         amount: BorrowAssetAmount,
     ) {
-        let liability_reduction = borrow_position.reduce_borrow_asset_liability(amount);
+        let liability_reduction = borrow_position
+            .reduce_borrow_asset_liability(amount)
+            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
         require!(
             liability_reduction.amount_remaining.is_zero(),
@@ -339,6 +342,7 @@ impl Market {
             .accumulate_yield(accumulated, last_block_height);
     }
 
+    #[allow(clippy::missing_panics_doc)]
     pub fn calculate_supply_position_yield<T: AssetClass>(
         &self,
         yield_distribution_log: &TreeMap<u64, FungibleAssetAmount<T>>,
@@ -348,8 +352,7 @@ impl Market {
     ) -> (FungibleAssetAmount<T>, u64) {
         let start_from_block_height = yield_distribution_log
             .floor_key(&last_updated_block_height)
-            .map(|i| i - 1) // -1 because TreeMap::iter_from start is _exclusive_
-            .unwrap_or(0);
+            .map_or(0, |i| i - 1); // -1 because TreeMap::iter_from start is _exclusive_
 
         // We explicitly want to _exclude_ `until_block_height` because the
         // intended use of this method is that it will be
@@ -368,7 +371,10 @@ impl Market {
                 break;
             }
 
-            let total_loan_asset_deposited_at_distribution = self
+            // Safe because borrow assets must always be deposited before
+            // yield can be distributed.
+            #[allow(clippy::unwrap_used)]
+            let total_borrow_asset_deposited_at_distribution = self
                 .total_borrow_asset_deposited_log
                 .get(
                     &self
@@ -379,14 +385,18 @@ impl Market {
                 .unwrap();
 
             // this discards fractional fees
-            let share = Rational::new(
+            let share = Fraction::new(
                 borrow_asset_deposited_during_interval.as_u128(),
-                total_loan_asset_deposited_at_distribution.as_u128(),
-            );
+                total_borrow_asset_deposited_at_distribution.as_u128(),
+            )
+            .unwrap_or_else(|| {
+                env::panic_str(&format!("Invariant violation: Total borrow asset is less than supplier's deposit at block height {block_height}"));
+            });
+            // Safe because Fraction type is guaranteed to be <=1, so cannot overflow.
+            #[allow(clippy::unwrap_used)]
             let portion_of_fees = share
                 .checked_scalar_mul(fees.as_u128())
-                .unwrap()
-                .floor()
+                .and_then(|x| x.floor())
                 .unwrap()
                 .into();
 
@@ -416,15 +426,24 @@ impl Market {
             .is_liquidation()
     }
 
+    pub fn record_liquidation_lock(&mut self, borrow_position: &mut BorrowPosition) {
+        borrow_position.liquidation_lock = true;
+    }
+
+    pub fn record_liquidation_unlock(&mut self, borrow_position: &mut BorrowPosition) {
+        borrow_position.liquidation_lock = false;
+    }
+
     pub fn record_full_liquidation(
         &mut self,
         borrow_position: &mut BorrowPosition,
         mut recovered_amount: BorrowAssetAmount,
     ) {
-        if recovered_amount
-            .split(borrow_position.get_borrow_asset_principal())
-            .is_some()
-        {
+        let principal = borrow_position.get_borrow_asset_principal();
+        borrow_position.full_liquidation(env::block_timestamp_ms());
+
+        // TODO: Is it correct to only care about the original principal here?
+        if recovered_amount.split(principal).is_some() {
             // distribute yield
             self.record_borrow_asset_yield_distribution(recovered_amount);
         } else {
@@ -433,32 +452,4 @@ impl Market {
             todo!("Took a loss during liquidation");
         }
     }
-
-    // /// Returns the borrow position regardless of whether it is "locked."
-    // ///
-    // /// Returns an empty/new borrow position if a record for the account does not exist.
-    // pub fn force_get_borrow_position(&self, account_id: &AccountId) -> BorrowPosition {
-    //     self.borrow_positions
-    //         .get(account_id)
-    //         .map_or_else(|| BorrowPosition::new(env::block_height()), Lockable::take)
-    // }
-
-    // /// Returns the borrow position if it is unlocked.
-    // ///
-    // /// Returns an empty/new borrow position if a record for the account does not exist.
-    // pub fn get_unlocked_borrow_position(&self, account_id: &AccountId) -> Option<BorrowPosition> {
-    //     self.borrow_positions.get(account_id).map_or_else(
-    //         || Some(BorrowPosition::new(env::block_height())),
-    //         Lockable::to_unlocked,
-    //     )
-    // }
-
-    // pub fn insert_unlocked_borrow_position(
-    //     &mut self,
-    //     account_id: &AccountId,
-    //     borrow_position: BorrowPosition,
-    // ) {
-    //     self.borrow_positions
-    //         .insert(account_id, &Lockable::Unlocked(borrow_position));
-    // }
 }

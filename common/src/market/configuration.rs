@@ -15,7 +15,6 @@ pub struct MarketConfiguration {
     pub borrow_asset: FungibleAsset<BorrowAsset>,
     pub collateral_asset: FungibleAsset<CollateralAsset>,
     pub balance_oracle_account_id: AccountId,
-    pub liquidator_account_id: AccountId,
     pub minimum_collateral_ratio_per_borrow: Rational<u16>,
     /// How much of the deposited principal may be lent out (up to 100%)?
     /// This is a matter of protection for supply providers.
@@ -38,7 +37,7 @@ pub struct MarketConfiguration {
     /// NEAR, a "maximum liquidator spread" of 10% would mean that a liquidator
     /// could liquidate this borrow by sending 109USDC, netting the liquidator
     /// ($110 - $100) * 10% = $1 of NEAR.
-    pub maximum_liquidator_spread: Rational<u16>,
+    pub maximum_liquidator_spread: Fraction<u16>,
 }
 
 impl MarketConfiguration {
@@ -85,11 +84,11 @@ impl MarketConfiguration {
         let scaled_collateral_value = borrow_position.collateral_asset_deposit.as_u128()
             * collateral_asset_price.numerator()
             * borrow_asset_price.denominator()
-            * self.minimum_collateral_ratio_per_borrow.denominator() as u128;
+            * u128::from(self.minimum_collateral_ratio_per_borrow.denominator());
         let scaled_borrow_value = borrow_position.get_total_borrow_asset_liability().as_u128()
             * borrow_asset_price.numerator()
             * collateral_asset_price.denominator()
-            * self.minimum_collateral_ratio_per_borrow.numerator() as u128;
+            * u128::from(self.minimum_collateral_ratio_per_borrow.numerator());
 
         scaled_collateral_value >= scaled_borrow_value
     }
@@ -108,7 +107,6 @@ mod tests {
                 borrow_asset: FungibleAsset::nep141("usdt.fakes.testnet".parse().unwrap()),
                 collateral_asset: FungibleAsset::nep141("wrap.testnet".parse().unwrap()),
                 balance_oracle_account_id: "root.testnet".parse().unwrap(),
-                liquidator_account_id: "templar-in-training.testnet".parse().unwrap(),
                 minimum_collateral_ratio_per_borrow: Rational::new(120, 100),
                 maximum_borrow_asset_usage_ratio: Fraction::new(99, 100).unwrap(),
                 borrow_origination_fee: Fee::Proportional(Rational::new(1, 100)),
@@ -120,7 +118,7 @@ mod tests {
                 yield_weights: YieldWeights::new_with_supply_weight(8)
                     .with_static("protocol".parse().unwrap(), 1)
                     .with_static("insurance".parse().unwrap(), 1),
-                maximum_liquidator_spread: Rational::new(5, 100),
+                maximum_liquidator_spread: Fraction::new(5, 100).unwrap(),
             })
             .unwrap()
         );

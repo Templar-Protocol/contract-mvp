@@ -22,24 +22,26 @@ impl<T> Lockable<T> {
         matches!(self, Self::Locked(..))
     }
 
+    #[must_use]
     pub fn lock(self) -> Self {
         match self {
             Self::Unlocked(i) => Self::Locked(i),
-            _ => self,
+            Self::Locked(_) => self,
         }
     }
 
+    #[must_use]
     pub fn unlock(self) -> Self {
         match self {
             Self::Locked(i) => Self::Unlocked(i),
-            _ => self,
+            Self::Unlocked(_) => self,
         }
     }
 
     pub fn to_unlocked(self) -> Option<T> {
         match self {
             Self::Unlocked(i) => Some(i),
-            _ => None,
+            Self::Locked(_) => None,
         }
     }
 
@@ -58,7 +60,7 @@ impl<T> Lockable<T> {
     pub fn try_get_mut(&mut self) -> Option<&mut T> {
         match self {
             Self::Unlocked(ref mut i) => Some(i),
-            _ => None,
+            Self::Locked(_) => None,
         }
     }
 }

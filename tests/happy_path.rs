@@ -3,29 +3,29 @@ use test_utils::*;
 use tokio::join;
 
 #[test]
-#[ignore = "generates a dummy config"]
-fn gen_config() {
+#[ignore = "generates the arguments to a new() call"]
+fn gen_constructor_arguments() {
     println!(
-        "{}",
+        "{{\"configuration\":{}}}",
         near_sdk::serde_json::to_string(&market_configuration(
             "usdt.fakes.testnet".parse().unwrap(),
             "wrap.testnet".parse().unwrap(),
-            "liquidator".parse().unwrap(),
             YieldWeights::new_with_supply_weight(1)
         ))
         .unwrap()
     );
 }
 
+#[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn test_happy() {
     let SetupEverything {
         c,
-        owner_user: _,
         supply_user,
         borrow_user,
         protocol_yield_user,
         insurance_yield_user,
+        ..
     } = setup_everything(|_| {}).await;
 
     let configuration = c.get_configuration().await;
@@ -199,20 +199,20 @@ async fn test_happy() {
         async {
             let protocol_yield = c.get_static_yield(protocol_yield_user.id()).await.unwrap();
             assert_eq!(protocol_yield.borrow_asset.as_u128(), 10);
-            let balance_before = c.borrow_asset_balance_of(&protocol_yield_user.id()).await;
+            let balance_before = c.borrow_asset_balance_of(protocol_yield_user.id()).await;
             c.withdraw_static_yield(&protocol_yield_user, None, None)
                 .await;
-            let balance_after = c.borrow_asset_balance_of(&protocol_yield_user.id()).await;
+            let balance_after = c.borrow_asset_balance_of(protocol_yield_user.id()).await;
             assert_eq!(balance_after - balance_before, 10);
         },
         // Insurance yield.
         async {
             let insurance_yield = c.get_static_yield(insurance_yield_user.id()).await.unwrap();
             assert_eq!(insurance_yield.borrow_asset.as_u128(), 10);
-            let balance_before = c.borrow_asset_balance_of(&insurance_yield_user.id()).await;
+            let balance_before = c.borrow_asset_balance_of(insurance_yield_user.id()).await;
             c.withdraw_static_yield(&insurance_yield_user, None, None)
                 .await;
-            let balance_after = c.borrow_asset_balance_of(&insurance_yield_user.id()).await;
+            let balance_after = c.borrow_asset_balance_of(insurance_yield_user.id()).await;
             assert_eq!(balance_after - balance_before, 10);
         },
         // Borrower withdraws collateral.

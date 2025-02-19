@@ -3,12 +3,17 @@ use near_sdk::{
     serde_json::{self, json},
     AccountId, AccountIdRef, NearToken,
 };
-use near_workspaces::{network::Sandbox, prelude::*, Account, Contract, DevNetwork, Worker};
+use near_workspaces::{
+    network::Sandbox, prelude::*, result::ExecutionSuccess, Account, Contract, DevNetwork, Worker,
+};
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount, FungibleAsset},
     borrow::{BorrowPosition, BorrowStatus},
     fee::{Fee, TimeBasedFee},
-    market::{MarketConfiguration, Nep141MarketDepositMessage, OraclePriceProof, YieldWeights},
+    market::{
+        LiquidateMsg, MarketConfiguration, Nep141MarketDepositMessage, OraclePriceProof,
+        YieldWeights,
+    },
     rational::{Fraction, Rational},
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
@@ -17,6 +22,11 @@ use templar_common::{
 
 pub const EQUAL_PRICE: OraclePriceProof = OraclePriceProof {
     collateral_asset_price: Rational::<u128>::one(),
+    borrow_asset_price: Rational::<u128>::one(),
+};
+
+pub const COLLATERAL_HALF_PRICE: OraclePriceProof = OraclePriceProof {
+    collateral_asset_price: Rational::<u128>::new_const(1, 2),
     borrow_asset_price: Rational::<u128>::one(),
 };
 
@@ -224,6 +234,33 @@ impl TestController {
             .unwrap();
     }
 
+    pub async fn asset_transfer_call(
+        &self,
+        asset_id: &AccountId,
+        sender: &Account,
+        receiver_id: &AccountId,
+        amount: u128,
+        msg: &str,
+    ) -> ExecutionSuccess {
+        println!(
+            "{} sending {amount} tokens of {asset_id} to {receiver_id} with msg {msg}...",
+            sender.id(),
+        );
+        sender
+            .call(asset_id, "ft_transfer_call")
+            .args_json(json!({
+                "receiver_id": receiver_id,
+                "amount": U128(amount),
+                "msg": msg,
+            }))
+            .deposit(NearToken::from_yoctonear(1))
+            .max_gas()
+            .transact()
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
     pub async fn borrow_asset_transfer(
         &self,
         sender: &Account,
@@ -232,6 +269,17 @@ impl TestController {
     ) {
         self.asset_transfer(self.borrow_asset.id(), sender, receiver_id, amount)
             .await;
+    }
+
+    pub async fn borrow_asset_transfer_call(
+        &self,
+        sender: &Account,
+        receiver_id: &AccountId,
+        amount: u128,
+        msg: &str,
+    ) -> ExecutionSuccess {
+        self.asset_transfer_call(self.borrow_asset.id(), sender, receiver_id, amount, msg)
+            .await
     }
 
     pub async fn repay(&self, borrow_user: &Account, amount: u128) {
@@ -380,6 +428,32 @@ impl TestController {
             .unwrap();
     }
 
+    pub async fn liquidate(
+        &self,
+        liquidator_user: &Account,
+        account_id: &AccountId,
+        borrow_asset_amount: u128,
+        oracle_price_proof: OraclePriceProof,
+    ) {
+        println!(
+            "{} executing liquidation against {} for {}...",
+            liquidator_user.id(),
+            account_id,
+            borrow_asset_amount,
+        );
+        self.borrow_asset_transfer_call(
+            liquidator_user,
+            self.contract.id(),
+            borrow_asset_amount,
+            &serde_json::to_string(&Nep141MarketDepositMessage::Liquidate(LiquidateMsg {
+                account_id: account_id.clone(),
+                oracle_price_proof,
+            }))
+            .unwrap(),
+        )
+        .await;
+    }
+
     #[allow(unused)] // This is useful for debugging tests
     pub async fn print_logs(&self) {
         let total_borrow_asset_deposited_log = self
@@ -436,14 +510,12 @@ macro_rules! accounts {
 pub fn market_configuration(
     borrow_asset_id: AccountId,
     collateral_asset_id: AccountId,
-    liquidator_account_id: AccountId,
     yield_weights: YieldWeights,
 ) -> MarketConfiguration {
     MarketConfiguration {
         borrow_asset: FungibleAsset::nep141(borrow_asset_id),
         collateral_asset: FungibleAsset::nep141(collateral_asset_id),
         balance_oracle_account_id: "balance_oracle".parse().unwrap(),
-        liquidator_account_id,
         minimum_collateral_ratio_per_borrow: Rational::new(120, 100),
         maximum_borrow_asset_usage_ratio: Fraction::new(99, 100).unwrap(),
         borrow_origination_fee: Fee::Proportional(Rational::new(10, 100)),
@@ -451,7 +523,7 @@ pub fn market_configuration(
         maximum_borrow_duration_ms: None,
         minimum_borrow_amount: 1.into(),
         maximum_borrow_amount: u128::MAX.into(),
-        maximum_liquidator_spread: Rational::new(5, 100),
+        maximum_liquidator_spread: Fraction::new(5, 100).unwrap(),
         supply_withdrawal_fee: TimeBasedFee::zero(),
         yield_weights,
     }
@@ -507,7 +579,7 @@ pub async fn deploy_ft(
 
 pub struct SetupEverything {
     pub c: TestController,
-    pub owner_user: Account,
+    pub liquidator_user: Account,
     pub supply_user: Account,
     pub borrow_user: Account,
     pub protocol_yield_user: Account,
@@ -520,7 +592,7 @@ pub async fn setup_everything(
     let worker = near_workspaces::sandbox().await.unwrap();
     accounts!(
         worker,
-        owner_user,
+        liquidator_user,
         supply_user,
         borrow_user,
         protocol_yield_user,
@@ -531,29 +603,28 @@ pub async fn setup_everything(
     let mut config = market_configuration(
         borrow_asset.id().clone(),
         collateral_asset.id().clone(),
-        owner_user.id().clone(),
         YieldWeights::new_with_supply_weight(8)
             .with_static(protocol_yield_user.id().clone(), 1)
             .with_static(insurance_yield_user.id().clone(), 1),
     );
     customize_market_configuration(&mut config);
-    let contract = setup_market(&worker, config).await;
-    let borrow_asset = deploy_ft(
-        borrow_asset,
-        "Borrow Asset",
-        "BORROW",
-        supply_user.id(),
-        100000,
-    )
-    .await;
-    let collateral_asset = deploy_ft(
-        collateral_asset,
-        "Collateral Asset",
-        "COLLATERAL",
-        borrow_user.id(),
-        100000,
-    )
-    .await;
+    let (contract, borrow_asset, collateral_asset) = tokio::join!(
+        setup_market(&worker, config),
+        deploy_ft(
+            borrow_asset,
+            "Borrow Asset",
+            "BORROW",
+            supply_user.id(),
+            200000,
+        ),
+        deploy_ft(
+            collateral_asset,
+            "Collateral Asset",
+            "COLLATERAL",
+            borrow_user.id(),
+            100000,
+        ),
+    );
 
     let c = TestController {
         worker,
@@ -565,6 +636,11 @@ pub async fn setup_everything(
     // Asset opt-ins.
     tokio::join!(
         c.storage_deposits(c.contract.as_account()),
+        async {
+            c.storage_deposits(&liquidator_user).await;
+            c.borrow_asset_transfer(&supply_user, liquidator_user.id(), 100000)
+                .await;
+        },
         c.storage_deposits(&borrow_user),
         c.storage_deposits(&supply_user),
         c.storage_deposits(&protocol_yield_user),
@@ -573,7 +649,7 @@ pub async fn setup_everything(
 
     SetupEverything {
         c,
-        owner_user,
+        liquidator_user,
         supply_user,
         borrow_user,
         protocol_yield_user,

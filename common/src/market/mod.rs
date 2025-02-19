@@ -28,6 +28,9 @@ pub struct YieldWeights {
 }
 
 impl YieldWeights {
+    /// # Panics
+    /// - If `supply` is zero.
+    #[allow(clippy::unwrap_used)]
     pub fn new_with_supply_weight(supply: u16) -> Self {
         Self {
             supply: supply.try_into().unwrap(),
@@ -35,6 +38,7 @@ impl YieldWeights {
         }
     }
 
+    #[must_use]
     pub fn with_static(mut self, account_id: AccountId, weight: u16) -> Self {
         self.r#static.insert(account_id, weight);
         self
@@ -43,7 +47,7 @@ impl YieldWeights {
     pub fn total_weight(&self) -> NonZeroU16 {
         self.r#static
             .values()
-            .try_fold(self.supply, |a, b| a.checked_add((*b).into()))
+            .try_fold(self.supply, |a, b| a.checked_add(*b))
             .unwrap_or_else(|| env::panic_str("Total weight overflow"))
     }
 
@@ -51,7 +55,7 @@ impl YieldWeights {
         self.r#static
             .get(account_id)
             .map_or_else(Rational::<u16>::zero, |weight| {
-                Rational::new((*weight).into(), self.total_weight().into())
+                Rational::new(*weight, self.total_weight().into())
             })
     }
 }

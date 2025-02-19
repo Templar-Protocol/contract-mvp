@@ -59,6 +59,7 @@ impl<T: AssetClass> FungibleAsset<T> {
     }
 
     pub fn into_nep141(self) -> Option<AccountId> {
+        #[allow(clippy::match_wildcard_for_single_variants)]
         match self.kind {
             FungibleAssetKind::Nep141(contract_id) => Some(contract_id),
             _ => None,
