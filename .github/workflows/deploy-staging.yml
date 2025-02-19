@@ -20,9 +20,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install near CLI
-        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/near-cli-rs/releases/download/v0.11.1/near-cli-rs-installer.sh | sh
+        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/near-cli-rs/releases/download/v0.18.0/near-cli-rs-installer.sh | sh
       - name: Create staging account
-        # if: github.event.action == 'opened' || github.event.action == 'reopened'
         run: |
           set +e
           near account \
