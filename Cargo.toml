@@ -6,7 +6,6 @@ near-sdk = { version = "5.7", features = ["unstable"] }
 near-contract-standards = "5.7"
 near-workspaces = { version = "0.16", features = ["unstable"] }
 rstest = { version = "0.24" }
-serde = { version = "1.0", features = ["derive"] }
 templar-common = { path = "./common" }
 test-utils = { path = "./test-utils" }
 thiserror = "2.0.11"
@@ -51,7 +50,6 @@ container_build_command = ["cargo", "near", "build"]
 [dependencies]
 near-sdk.workspace = true
 near-contract-standards.workspace = true
-serde.workspace = true
 templar-common.workspace = true
 
 [dev-dependencies]
