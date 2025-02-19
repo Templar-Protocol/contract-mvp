@@ -8,3 +8,6 @@ near-sdk.workspace = true
 near-workspaces.workspace = true
 templar-common.workspace = true
 tokio.workspace = true
+
+[[example]]
+name = "generate_testnet_configuration"
