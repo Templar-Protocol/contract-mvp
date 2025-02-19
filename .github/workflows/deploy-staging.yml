@@ -24,12 +24,14 @@ jobs:
       - name: Create staging account
         # if: github.event.action == 'opened' || github.event.action == 'reopened'
         run: |
+          set +e
           near account \
             view-account-summary "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" \
             network-config "${{ vars.NEAR_CONTRACT_STAGING_NETWORK }}" \
             now
 
           if [ $? -eq 1 ]; then
+            set -e
             near account create-account fund-myself "${{ env.NEAR_CONTRACT_PR_STAGING_ACCOUNT_ID }}" '10 NEAR' \
               use-manually-provided-public-key "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_PUBLIC_KEY }}" \
               sign-as "${{ vars.NEAR_CONTRACT_STAGING_ACCOUNT_ID }}" \
