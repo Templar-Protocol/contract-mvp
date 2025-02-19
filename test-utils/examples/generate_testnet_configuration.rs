@@ -15,7 +15,6 @@ pub fn main() {
         serde_json::to_string(&market_configuration(
             "usdt.fakes.testnet".parse().unwrap(),
             "wrap.testnet".parse().unwrap(),
-            master_account.clone(),
             YieldWeights::new_with_supply_weight(9).with_static(master_account, 1)
         ))
         .unwrap(),
