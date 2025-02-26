@@ -1,15 +1,16 @@
+use bigdecimal::{BigDecimal, ToPrimitive};
 use near_sdk::{json_types::U64, near};
 
 use crate::{
     asset::{AssetClass, FungibleAssetAmount},
-    rational::Rational,
+    wrapped_bigdecimal::WrappedBigDecimal,
 };
 
 #[derive(Clone, Debug)]
 #[near(serializers = [json, borsh])]
 pub enum Fee<T: AssetClass> {
     Flat(FungibleAssetAmount<T>),
-    Proportional(Rational<u16>),
+    Proportional(WrappedBigDecimal),
 }
 
 impl<T: AssetClass> Fee<T> {
@@ -20,11 +21,9 @@ impl<T: AssetClass> Fee<T> {
     pub fn of(&self, amount: FungibleAssetAmount<T>) -> Option<FungibleAssetAmount<T>> {
         match self {
             Fee::Flat(f) => Some(*f),
-            Fee::Proportional(rational) => rational
-                .upcast::<u128>()
-                .checked_scalar_mul(amount.as_u128())?
-                .ceil()
-                .map(Into::into),
+            Fee::Proportional(factor) => (&**factor * amount.as_u128())
+                .to_u128()
+                .map(FungibleAssetAmount::new),
         }
     }
 }
@@ -65,11 +64,10 @@ impl<T: AssetClass> TimeBasedFee<T> {
 
         match self.behavior {
             TimeBasedFeeFunction::Fixed => Some(base_fee),
-            TimeBasedFeeFunction::Linear => Rational::new(time, self.duration.0)
-                .upcast::<u128>()
-                .checked_scalar_mul(base_fee.as_u128())?
-                .ceil()
-                .map(Into::into),
+            TimeBasedFeeFunction::Linear => (BigDecimal::from(time) / self.duration.0
+                * base_fee.as_u128())
+            .to_u128()
+            .map(FungibleAssetAmount::new),
             TimeBasedFeeFunction::Logarithmic => Some(
                 // TODO: Seems jank.
                 #[allow(

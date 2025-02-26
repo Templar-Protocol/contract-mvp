@@ -1,3 +1,6 @@
+use std::str::FromStr;
+
+use bigdecimal::{BigDecimal, One};
 use near_sdk::{
     json_types::{U128, U64},
     serde_json::{self, json},
@@ -14,22 +17,35 @@ use templar_common::{
         LiquidateMsg, MarketConfiguration, Nep141MarketDepositMessage, OraclePriceProof,
         YieldWeights,
     },
-    rational::{Fraction, Rational},
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
 };
 use tokio::sync::OnceCell;
 
-pub const EQUAL_PRICE: OraclePriceProof = OraclePriceProof {
-    collateral_asset_price: Rational::<u128>::one(),
-    borrow_asset_price: Rational::<u128>::one(),
-};
+pub fn equal_price() -> OraclePriceProof {
+    OraclePriceProof {
+        collateral_asset_price: BigDecimal::one().into(),
+        borrow_asset_price: BigDecimal::one().into(),
+    }
+}
 
-pub const COLLATERAL_HALF_PRICE: OraclePriceProof = OraclePriceProof {
-    collateral_asset_price: Rational::<u128>::new_const(1, 2),
-    borrow_asset_price: Rational::<u128>::one(),
-};
+pub fn collateral_half_price() -> OraclePriceProof {
+    OraclePriceProof {
+        collateral_asset_price: BigDecimal::one().half().into(),
+        borrow_asset_price: BigDecimal::one().into(),
+    }
+}
+
+// pub const EQUAL_PRICE: OraclePriceProof = OraclePriceProof {
+//     collateral_asset_price: BigDecimal::one(),
+//     borrow_asset_price: BigDecimal::one(),
+// };
+
+// pub const COLLATERAL_HALF_PRICE: OraclePriceProof = OraclePriceProof {
+//     collateral_asset_price: BigDecimal::one().half(),
+//     borrow_asset_price: BigDecimal::one(),
+// };
 
 pub enum TestAsset {
     Native,
@@ -657,14 +673,14 @@ pub fn market_configuration(
         borrow_asset: FungibleAsset::nep141(borrow_asset_id),
         collateral_asset: FungibleAsset::nep141(collateral_asset_id),
         balance_oracle_account_id: "balance_oracle".parse().unwrap(),
-        minimum_collateral_ratio_per_borrow: Rational::new(120, 100),
-        maximum_borrow_asset_usage_ratio: Fraction::new(99, 100).unwrap(),
-        borrow_origination_fee: Fee::Proportional(Rational::new(10, 100)),
+        minimum_collateral_ratio_per_borrow: BigDecimal::from_str("1.2").unwrap().into(),
+        maximum_borrow_asset_usage_ratio: BigDecimal::from_str("0.99").unwrap().into(),
+        borrow_origination_fee: Fee::Proportional(BigDecimal::from_str("0.1").unwrap().into()),
         borrow_annual_maintenance_fee: Fee::zero(),
         maximum_borrow_duration_ms: None,
         minimum_borrow_amount: 1.into(),
         maximum_borrow_amount: u128::MAX.into(),
-        maximum_liquidator_spread: Fraction::new(5, 100).unwrap(),
+        maximum_liquidator_spread: BigDecimal::from_str("0.05").unwrap().into(),
         supply_withdrawal_fee: TimeBasedFee::zero(),
         yield_weights,
     }

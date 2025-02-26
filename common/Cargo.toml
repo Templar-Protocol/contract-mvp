@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+bigdecimal.workspace = true
 near-contract-standards.workspace = true
 near-sdk.workspace = true
 thiserror.workspace = true

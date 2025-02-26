@@ -83,7 +83,7 @@ impl Contract {
             self.configuration
                 .borrow_status(
                     &borrow_position,
-                    oracle_price_proof,
+                    oracle_price_proof.clone(),
                     env::block_timestamp_ms(),
                 )
                 .is_liquidation(),

@@ -1,5 +1,7 @@
+use std::str::FromStr;
+
 use rstest::rstest;
-use templar_common::{asset::FungibleAsset, borrow::BorrowStatus, rational::Rational};
+use templar_common::{asset::FungibleAsset, borrow::BorrowStatus};
 use test_utils::*;
 use tokio::join;
 
@@ -19,6 +21,8 @@ enum NativeAssetCase {
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
+    use bigdecimal::BigDecimal;
+
     let SetupEverything {
         c,
         supply_user,
@@ -67,8 +71,8 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
     }
 
     assert_eq!(
-        configuration.minimum_collateral_ratio_per_borrow,
-        Rational::new(120, 100)
+        &*configuration.minimum_collateral_ratio_per_borrow,
+        &BigDecimal::from_str("1.2").unwrap(),
     );
 
     // Step 1: Supply user sends tokens to contract to use for borrows.
@@ -111,7 +115,7 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
     );
 
     let borrow_status = c
-        .get_borrow_status(borrow_user.id(), EQUAL_PRICE)
+        .get_borrow_status(borrow_user.id(), equal_price())
         .await
         .unwrap();
 
@@ -124,7 +128,7 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
     // Step 3: Withdraw some of the borrow asset
 
     // Borrowing 1000 borrow tokens with 2000 collateral tokens should be fine given equal price and MCR of 120%.
-    c.borrow(&borrow_user, 1000, EQUAL_PRICE).await;
+    c.borrow(&borrow_user, 1000, equal_price()).await;
 
     let balance = c.borrow_asset_balance_of(borrow_user.id()).await;
 

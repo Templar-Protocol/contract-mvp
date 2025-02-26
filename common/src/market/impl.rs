@@ -1,3 +1,4 @@
+use bigdecimal::{BigDecimal, ToPrimitive};
 use near_sdk::{
     collections::{LookupMap, TreeMap, UnorderedMap},
     env, near, require, AccountId, BorshStorageKey, IntoStorageKey,
@@ -7,7 +8,6 @@ use crate::{
     asset::{AssetClass, BorrowAssetAmount, CollateralAssetAmount, FungibleAssetAmount},
     borrow::BorrowPosition,
     market::MarketConfiguration,
-    rational::Fraction,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
     withdrawal_queue::{error::WithdrawalQueueLockError, WithdrawalQueue},
@@ -72,20 +72,10 @@ impl Market {
         &self,
         current_contract_balance: BorrowAssetAmount,
     ) -> BorrowAssetAmount {
-        let Some(must_retain) = self
-            .configuration
-            .maximum_borrow_asset_usage_ratio
-            .upcast::<u128>()
-            .complement()
-            .checked_scalar_mul(self.borrow_asset_deposited.as_u128())
-            .and_then(|x| x.ceil())
-        else {
-            return 0.into();
-            // TODO: Use U256 instead of U128 for balances.
-            // This won't prevent overflow here, but it will make it harder.
-            // It will prevent overflow for NEAR-native tokens, where the
-            // balance is guaranteed to fit in u128.
-        };
+        let must_retain = ((1u32 - &self.configuration.maximum_borrow_asset_usage_ratio.0)
+            * self.borrow_asset_deposited.as_u128())
+        .to_u128()
+        .unwrap();
 
         let known_available = current_contract_balance
             .as_u128()
@@ -373,7 +363,6 @@ impl Market {
 
             // Safe because borrow assets must always be deposited before
             // yield can be distributed.
-            #[allow(clippy::unwrap_used)]
             let total_borrow_asset_deposited_at_distribution = self
                 .total_borrow_asset_deposited_log
                 .get(
@@ -384,23 +373,12 @@ impl Market {
                 )
                 .unwrap();
 
-            // this discards fractional fees
-            let share = Fraction::new(
-                borrow_asset_deposited_during_interval.as_u128(),
-                total_borrow_asset_deposited_at_distribution.as_u128(),
-            )
-            .unwrap_or_else(|| {
-                env::panic_str(&format!("Invariant violation: Total borrow asset is less than supplier's deposit at block height {block_height}"));
-            });
-            // Safe because Fraction type is guaranteed to be <=1, so cannot overflow.
-            #[allow(clippy::unwrap_used)]
-            let portion_of_fees = share
-                .checked_scalar_mul(fees.as_u128())
-                .and_then(|x| x.floor())
-                .unwrap()
-                .into();
+            let share = BigDecimal::from(borrow_asset_deposited_during_interval.as_u128())
+                / total_borrow_asset_deposited_at_distribution.as_u128();
+            let portion_of_fees = share * fees.as_u128();
 
-            accumulated_fees_in_span.join(portion_of_fees);
+            accumulated_fees_in_span
+                .join(FungibleAssetAmount::new(portion_of_fees.to_u128().unwrap()));
 
             last_block_height = block_height;
         }

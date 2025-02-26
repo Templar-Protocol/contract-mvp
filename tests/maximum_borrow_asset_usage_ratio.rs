@@ -1,5 +1,5 @@
+use bigdecimal::BigDecimal;
 use rstest::rstest;
-use templar_common::rational::Fraction;
 use test_utils::*;
 
 #[rstest]
@@ -15,13 +15,13 @@ async fn borrow_within_maximum_usage_ratio(#[case] percent: u16) {
         borrow_user,
         ..
     } = setup_everything(|c| {
-        c.maximum_borrow_asset_usage_ratio = Fraction::new(percent, 100).unwrap();
+        c.maximum_borrow_asset_usage_ratio.0 = BigDecimal::from(percent) / 100;
     })
     .await;
 
     c.supply(&supply_user, 1000).await;
     c.collateralize(&borrow_user, 2000).await;
-    c.borrow(&borrow_user, u128::from(percent) * 10, EQUAL_PRICE)
+    c.borrow(&borrow_user, u128::from(percent) * 10, equal_price())
         .await;
 }
 
@@ -39,12 +39,12 @@ async fn borrow_exceeds_maximum_usage_ratio(#[case] percent: u16) {
         borrow_user,
         ..
     } = setup_everything(|c| {
-        c.maximum_borrow_asset_usage_ratio = Fraction::new(percent, 100).unwrap();
+        c.maximum_borrow_asset_usage_ratio.0 = BigDecimal::from(percent) / 100;
     })
     .await;
 
     c.supply(&supply_user, 1000).await;
     c.collateralize(&borrow_user, 2000).await;
-    c.borrow(&borrow_user, u128::from(percent) * 10 + 1, EQUAL_PRICE)
+    c.borrow(&borrow_user, u128::from(percent) * 10 + 1, equal_price())
         .await;
 }
