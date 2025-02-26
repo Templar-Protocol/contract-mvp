@@ -38,9 +38,10 @@ pub trait MarketExternalInterface {
     // BORROW FUNCTIONS
     // ==================
 
-    // Required to implement NEP-141 FT token receiver to receive local fungible tokens.
-    // ft_on_receive :: where msg = collateralize
-    // ft_on_receive :: where msg = repay
+    // ft_on_receive :: where msg = Collateralize
+    fn collateralize_native(&mut self);
+    // ft_on_receive :: where msg = Repay
+    fn repay_native(&mut self) -> PromiseOrValue<()>;
 
     fn get_borrow_position(&self, account_id: AccountId) -> Option<BorrowPosition>;
     /// This is just a read-only function, so we don't care about validating
@@ -68,8 +69,8 @@ pub trait MarketExternalInterface {
     // We assume that all borrowed assets are NEAR-local. That is to say, we
     // don't yet support supplying of remote assets.
 
-    // Required to implement NEP-141 FT token receiver to receive local fungible tokens.
-    // ft_on_receive :: where msg = supply
+    // ft_on_receive :: where msg = Supply
+    fn supply_native(&mut self);
 
     fn get_supply_position(&self, account_id: AccountId) -> Option<SupplyPosition>;
 
@@ -84,6 +85,17 @@ pub trait MarketExternalInterface {
     fn get_supply_withdrawal_queue_status(&self) -> WithdrawalQueueStatus;
 
     fn harvest_yield(&mut self);
+
+    // =====================
+    // LIQUIDATION FUNCTIONS
+    // =====================
+
+    // ft_on_receive :: where msg = Liquidate { account_id }
+    fn liquidate_native(
+        &mut self,
+        account_id: AccountId,
+        oracle_price_proof: OraclePriceProof,
+    ) -> Promise;
 
     // =================
     // YIELD FUNCTIONS
