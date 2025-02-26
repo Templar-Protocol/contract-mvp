@@ -1,7 +1,9 @@
 use near_sdk::{json_types::U64, near, AccountId};
 
 use crate::{
-    asset::{BorrowAsset, BorrowAssetAmount, CollateralAsset, FungibleAsset},
+    asset::{
+        BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
+    },
     borrow::{BorrowPosition, BorrowStatus, LiquidationReason},
     fee::{Fee, TimeBasedFee},
     rational::{Fraction, Rational},
@@ -91,6 +93,23 @@ impl MarketConfiguration {
             * u128::from(self.minimum_collateral_ratio_per_borrow.numerator());
 
         scaled_collateral_value >= scaled_borrow_value
+    }
+
+    pub fn minimum_acceptable_liquidation_amount(
+        &self,
+        amount: CollateralAssetAmount,
+        oracle_price_proof: OraclePriceProof,
+    ) -> BorrowAssetAmount {
+        // minimum_acceptable_amount = collateral_amount * (1 - maximum_liquidator_spread) * collateral_price / borrow_price
+        self.maximum_liquidator_spread
+            .complement()
+            .upcast::<u128>()
+            .checked_mul(oracle_price_proof.collateral_asset_price)
+            .and_then(|x| x.checked_div(oracle_price_proof.borrow_asset_price))
+            .and_then(|x| x.checked_scalar_mul(amount.as_u128()))
+            .and_then(|x| x.ceil())
+            .unwrap() // TODO: Eliminate .unwrap()
+            .into()
     }
 }
 

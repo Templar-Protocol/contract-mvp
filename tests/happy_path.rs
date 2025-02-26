@@ -1,24 +1,24 @@
-use templar_common::{borrow::BorrowStatus, market::YieldWeights, rational::Rational};
+use rstest::rstest;
+use templar_common::{asset::FungibleAsset, borrow::BorrowStatus, rational::Rational};
 use test_utils::*;
 use tokio::join;
 
-#[test]
-#[ignore = "generates the arguments to a new() call"]
-fn gen_constructor_arguments() {
-    println!(
-        "{{\"configuration\":{}}}",
-        near_sdk::serde_json::to_string(&market_configuration(
-            "usdt.fakes.testnet".parse().unwrap(),
-            "wrap.testnet".parse().unwrap(),
-            YieldWeights::new_with_supply_weight(1)
-        ))
-        .unwrap()
-    );
+#[allow(dead_code)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+enum NativeAssetCase {
+    Neither,
+    BorrowAsset,
+    CollateralAsset,
 }
 
+#[rstest]
+#[case(NativeAssetCase::Neither)]
+// TODO: Figure out gas accounting for native asset borrows.
+// #[case(NativeAssetCase::BorrowAsset)]
+// #[case(NativeAssetCase::CollateralAsset)]
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
-async fn test_happy() {
+async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
     let SetupEverything {
         c,
         supply_user,
@@ -26,18 +26,46 @@ async fn test_happy() {
         protocol_yield_user,
         insurance_yield_user,
         ..
-    } = setup_everything(|_| {}).await;
+    } = setup_everything(|c| match native_asset_case {
+        NativeAssetCase::Neither => {}
+        NativeAssetCase::BorrowAsset => {
+            c.borrow_asset = FungibleAsset::native();
+        }
+        NativeAssetCase::CollateralAsset => {
+            c.collateral_asset = FungibleAsset::native();
+        }
+    })
+    .await;
 
     let configuration = c.get_configuration().await;
 
-    assert_eq!(
-        &configuration.collateral_asset.into_nep141().unwrap(),
-        c.collateral_asset.id(),
-    );
-    assert_eq!(
-        &configuration.borrow_asset.into_nep141().unwrap(),
-        c.borrow_asset.id()
-    );
+    match native_asset_case {
+        NativeAssetCase::Neither => {
+            assert_eq!(
+                &configuration.collateral_asset.into_nep141().unwrap(),
+                c.collateral_asset.nep141_id().unwrap(),
+            );
+            assert_eq!(
+                &configuration.borrow_asset.into_nep141().unwrap(),
+                c.borrow_asset.nep141_id().unwrap(),
+            );
+        }
+        NativeAssetCase::BorrowAsset => {
+            assert_eq!(
+                &configuration.collateral_asset.into_nep141().unwrap(),
+                c.collateral_asset.nep141_id().unwrap(),
+            );
+            assert!(&configuration.borrow_asset.is_native());
+        }
+        NativeAssetCase::CollateralAsset => {
+            assert!(&configuration.collateral_asset.is_native());
+            assert_eq!(
+                &configuration.borrow_asset.into_nep141().unwrap(),
+                c.borrow_asset.nep141_id().unwrap(),
+            );
+        }
+    }
+
     assert_eq!(
         configuration.minimum_collateral_ratio_per_borrow,
         Rational::new(120, 100)
