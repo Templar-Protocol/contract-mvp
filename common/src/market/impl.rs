@@ -1,4 +1,3 @@
-use bigdecimal::{BigDecimal, ToPrimitive};
 use near_sdk::{
     collections::{LookupMap, TreeMap, UnorderedMap},
     env, near, require, AccountId, BorshStorageKey, IntoStorageKey,
@@ -8,6 +7,7 @@ use crate::{
     asset::{AssetClass, BorrowAssetAmount, CollateralAssetAmount, FungibleAssetAmount},
     borrow::BorrowPosition,
     market::MarketConfiguration,
+    number::Decimal,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
     withdrawal_queue::{error::WithdrawalQueueLockError, WithdrawalQueue},
@@ -72,7 +72,7 @@ impl Market {
         &self,
         current_contract_balance: BorrowAssetAmount,
     ) -> BorrowAssetAmount {
-        let must_retain = ((1u32 - &self.configuration.maximum_borrow_asset_usage_ratio.0)
+        let must_retain = ((1u32 - &self.configuration.maximum_borrow_asset_usage_ratio)
             * self.borrow_asset_deposited.as_u128())
         .to_u128()
         .unwrap();
@@ -373,7 +373,7 @@ impl Market {
                 )
                 .unwrap();
 
-            let share = BigDecimal::from(borrow_asset_deposited_during_interval.as_u128())
+            let share = Decimal::from(borrow_asset_deposited_during_interval.as_u128())
                 / total_borrow_asset_deposited_at_distribution.as_u128();
             let portion_of_fees = share * fees.as_u128();
 

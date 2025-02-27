@@ -4,10 +4,16 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-bigdecimal.workspace = true
+borsh.workspace = true
 near-contract-standards.workspace = true
 near-sdk.workspace = true
 thiserror.workspace = true
+primitive-types.workspace = true
+schemars.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true
+near-sdk = { workspace = true, features = ["unit-testing"] }
 
 [lints]
 workspace = true

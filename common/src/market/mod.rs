@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 use std::num::NonZeroU16;
 
-use bigdecimal::{BigDecimal, Zero};
 use near_sdk::{env, near, AccountId};
 
-use crate::{asset::BorrowAssetAmount, wrapped_bigdecimal::WrappedBigDecimal};
+use crate::{asset::BorrowAssetAmount, number::Decimal};
 
 mod configuration;
 pub use configuration::*;
@@ -51,11 +50,11 @@ impl YieldWeights {
             .unwrap_or_else(|| env::panic_str("Total weight overflow"))
     }
 
-    pub fn static_share(&self, account_id: &AccountId) -> BigDecimal {
+    pub fn static_share(&self, account_id: &AccountId) -> Decimal {
         self.r#static
             .get(account_id)
-            .map_or_else(BigDecimal::zero, |weight| {
-                BigDecimal::from(*weight) / u16::from(self.total_weight())
+            .map_or_else(Decimal::zero, |weight| {
+                Decimal::from(*weight) / u16::from(self.total_weight())
             })
     }
 }
@@ -79,6 +78,6 @@ pub struct LiquidateMsg {
 #[derive(Clone, Debug)]
 #[near(serializers = [json])]
 pub struct OraclePriceProof {
-    pub collateral_asset_price: WrappedBigDecimal,
-    pub borrow_asset_price: WrappedBigDecimal,
+    pub collateral_asset_price: Decimal,
+    pub borrow_asset_price: Decimal,
 }
