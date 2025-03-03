@@ -102,7 +102,7 @@ impl MarketConfiguration {
             ((1u32 - &self.maximum_liquidator_spread) * oracle_price_proof.collateral_asset_price
                 / oracle_price_proof.borrow_asset_price
                 * amount.as_u128())
-            .to_u128()
+            .to_u128_ceil()
             .unwrap(),
         )
     }

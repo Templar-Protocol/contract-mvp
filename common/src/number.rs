@@ -138,10 +138,23 @@ impl Decimal {
         }
     }
 
-    pub fn to_u128(&self) -> Option<u128> {
+    pub fn to_u128_floor(&self) -> Option<u128> {
         let truncated = self.repr >> FRACTIONAL_BITS;
         if truncated.bits() <= 128 {
             Some(truncated.as_u128())
+        } else {
+            None
+        }
+    }
+
+    pub fn to_u128_ceil(&self) -> Option<u128> {
+        let truncated = self.repr >> FRACTIONAL_BITS;
+        if truncated.bits() <= 128 {
+            if self.fractional_part().is_zero() {
+                Some(truncated.as_u128())
+            } else {
+                truncated.as_u128().checked_add(1)
+            }
         } else {
             None
         }
@@ -475,7 +488,7 @@ mod tests {
     fn get_upper_u128(mut d: Decimal) -> u128 {
         d /= Decimal::from(u128::pow(2, 64));
         d /= Decimal::from(u128::pow(2, 64));
-        d.to_u128().unwrap()
+        d.to_u128_floor().unwrap()
     }
 
     #[rstest]
@@ -557,10 +570,10 @@ mod tests {
 
     #[test]
     fn constants_are_accurate() {
-        assert_eq!(Decimal::zero().to_u128().unwrap(), 0);
+        assert_eq!(Decimal::zero().to_u128_floor().unwrap(), 0);
         assert!((Decimal::half().to_f64_lossy() - 0.5_f64).abs() < 1e-200);
-        assert_eq!(Decimal::one().to_u128().unwrap(), 1);
-        assert_eq!(Decimal::two().to_u128().unwrap(), 2);
+        assert_eq!(Decimal::one().to_u128_floor().unwrap(), 1);
+        assert_eq!(Decimal::two().to_u128_floor().unwrap(), 2);
     }
 
     #[rstest]

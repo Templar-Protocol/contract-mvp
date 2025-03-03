@@ -171,7 +171,7 @@ async fn successful_liquidation_with_spread(
         ;
 
     let liquidation_amount = (&collateral_asset_price * (1u32 - target_spread) * 2000u32)
-        .to_u128()
+        .to_u128_ceil()
         .unwrap();
 
     c.liquidate(

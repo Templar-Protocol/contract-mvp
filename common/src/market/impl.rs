@@ -74,7 +74,7 @@ impl Market {
     ) -> BorrowAssetAmount {
         let must_retain = ((1u32 - &self.configuration.maximum_borrow_asset_usage_ratio)
             * self.borrow_asset_deposited.as_u128())
-        .to_u128()
+        .to_u128_ceil()
         .unwrap();
 
         let known_available = current_contract_balance
@@ -377,8 +377,9 @@ impl Market {
                 / total_borrow_asset_deposited_at_distribution.as_u128();
             let portion_of_fees = share * fees.as_u128();
 
-            accumulated_fees_in_span
-                .join(FungibleAssetAmount::new(portion_of_fees.to_u128().unwrap()));
+            accumulated_fees_in_span.join(FungibleAssetAmount::new(
+                portion_of_fees.to_u128_floor().unwrap(),
+            ));
 
             last_block_height = block_height;
         }
