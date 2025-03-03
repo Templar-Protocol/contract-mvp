@@ -3,8 +3,7 @@ use std::num::NonZeroU16;
 
 use near_sdk::{env, near, AccountId};
 
-use crate::asset::BorrowAssetAmount;
-use crate::rational::Rational;
+use crate::{asset::BorrowAssetAmount, number::Decimal};
 
 mod configuration;
 pub use configuration::*;
@@ -51,11 +50,11 @@ impl YieldWeights {
             .unwrap_or_else(|| env::panic_str("Total weight overflow"))
     }
 
-    pub fn static_share(&self, account_id: &AccountId) -> Rational<u16> {
+    pub fn static_share(&self, account_id: &AccountId) -> Decimal {
         self.r#static
             .get(account_id)
-            .map_or_else(Rational::<u16>::zero, |weight| {
-                Rational::new(*weight, self.total_weight().into())
+            .map_or_else(Decimal::zero, |weight| {
+                Decimal::from(*weight) / u16::from(self.total_weight())
             })
     }
 }
@@ -76,9 +75,9 @@ pub struct LiquidateMsg {
 
 /// This represents some sort of proof-of-price from a price oracle, e.g. Pyth.
 /// In production, it must be validated, but for now it's just trust me bro.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 #[near(serializers = [json])]
 pub struct OraclePriceProof {
-    pub collateral_asset_price: Rational<u128>,
-    pub borrow_asset_price: Rational<u128>,
+    pub collateral_asset_price: Decimal,
+    pub borrow_asset_price: Decimal,
 }

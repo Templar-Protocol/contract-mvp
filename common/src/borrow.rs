@@ -28,7 +28,7 @@ pub enum LiquidationReason {
     Expiration,
 }
 
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[near(serializers = [borsh, json])]
 pub struct FeeRecord<T: AssetClass> {
     pub(crate) total: FungibleAssetAmount<T>,

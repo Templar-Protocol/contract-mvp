@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use near_sdk::{
     json_types::{U128, U64},
     serde_json::{self, json},
@@ -14,7 +16,7 @@ use templar_common::{
         LiquidateMsg, MarketConfiguration, Nep141MarketDepositMessage, OraclePriceProof,
         YieldWeights,
     },
-    rational::{Fraction, Rational},
+    number::Decimal,
     static_yield::StaticYieldRecord,
     supply::SupplyPosition,
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
@@ -22,13 +24,13 @@ use templar_common::{
 use tokio::sync::OnceCell;
 
 pub const EQUAL_PRICE: OraclePriceProof = OraclePriceProof {
-    collateral_asset_price: Rational::<u128>::one(),
-    borrow_asset_price: Rational::<u128>::one(),
+    collateral_asset_price: Decimal::one(),
+    borrow_asset_price: Decimal::one(),
 };
 
 pub const COLLATERAL_HALF_PRICE: OraclePriceProof = OraclePriceProof {
-    collateral_asset_price: Rational::<u128>::new_const(1, 2),
-    borrow_asset_price: Rational::<u128>::one(),
+    collateral_asset_price: Decimal::half(),
+    borrow_asset_price: Decimal::one(),
 };
 
 pub enum TestAsset {
@@ -657,14 +659,14 @@ pub fn market_configuration(
         borrow_asset: FungibleAsset::nep141(borrow_asset_id),
         collateral_asset: FungibleAsset::nep141(collateral_asset_id),
         balance_oracle_account_id: "balance_oracle".parse().unwrap(),
-        minimum_collateral_ratio_per_borrow: Rational::new(120, 100),
-        maximum_borrow_asset_usage_ratio: Fraction::new(99, 100).unwrap(),
-        borrow_origination_fee: Fee::Proportional(Rational::new(10, 100)),
+        minimum_collateral_ratio_per_borrow: Decimal::from_str("1.2").unwrap(),
+        maximum_borrow_asset_usage_ratio: Decimal::from_str("0.99").unwrap(),
+        borrow_origination_fee: Fee::Proportional(Decimal::from_str("0.1").unwrap()),
         borrow_annual_maintenance_fee: Fee::zero(),
         maximum_borrow_duration_ms: None,
         minimum_borrow_amount: 1.into(),
         maximum_borrow_amount: u128::MAX.into(),
-        maximum_liquidator_spread: Fraction::new(5, 100).unwrap(),
+        maximum_liquidator_spread: Decimal::from_str("0.05").unwrap(),
         supply_withdrawal_fee: TimeBasedFee::zero(),
         yield_weights,
     }

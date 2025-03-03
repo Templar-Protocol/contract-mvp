@@ -1,9 +1,6 @@
 use rstest::rstest;
-use templar_common::{
-    fee::Fee,
-    market::OraclePriceProof,
-    rational::{Fraction, Rational},
-};
+
+use templar_common::{fee::Fee, market::OraclePriceProof, number::Decimal};
 use test_utils::*;
 
 #[tokio::test]
@@ -74,7 +71,7 @@ async fn successful_liquidation_good_debt_under_mcr(
         ..
     } = setup_everything(|config| {
         config.borrow_origination_fee = Fee::zero();
-        config.minimum_collateral_ratio_per_borrow = Rational::new(mcr, 100);
+        config.minimum_collateral_ratio_per_borrow = Decimal::from(mcr) / 100u32;
     })
     .await;
 
@@ -90,8 +87,8 @@ async fn successful_liquidation_good_debt_under_mcr(
         borrow_user.id(),
         liquidation_amount,
         OraclePriceProof {
-            collateral_asset_price: Rational::new(collateral_asset_price_pct, 100),
-            borrow_asset_price: Rational::<u128>::one(),
+            collateral_asset_price: Decimal::from(collateral_asset_price_pct) / 100u32,
+            borrow_asset_price: Decimal::one(),
         },
     )
     .await;
@@ -146,9 +143,9 @@ async fn successful_liquidation_with_spread(
 ) {
     assert!(spread_pct <= maximum_spread_pct);
 
-    let maximum_liquidator_spread = Fraction::new(maximum_spread_pct, 100).unwrap();
-    let target_spread = Fraction::new(spread_pct, 100).unwrap();
-    let mcr = Rational::new(mcr, 100);
+    let maximum_liquidator_spread: Decimal = Decimal::from(maximum_spread_pct) / 100u32;
+    let target_spread: Decimal = Decimal::from(spread_pct) / 100u32;
+    let mcr: Decimal = Decimal::from(mcr) / 100u32;
 
     let SetupEverything {
         c,
@@ -157,7 +154,7 @@ async fn successful_liquidation_with_spread(
         borrow_user,
         ..
     } = setup_everything(|config| {
-        config.minimum_collateral_ratio_per_borrow = mcr;
+        config.minimum_collateral_ratio_per_borrow = mcr.clone();
         config.maximum_liquidator_spread = maximum_liquidator_spread;
     })
     .await;
@@ -169,17 +166,12 @@ async fn successful_liquidation_with_spread(
     let collateral_balance_before = c.collateral_asset_balance_of(liquidator_user.id()).await;
     let borrow_balance_before = c.borrow_asset_balance_of(liquidator_user.id()).await;
 
-    let collateral_asset_price = mcr
-        .upcast::<u128>()
-        .checked_div(
-            Rational::new(201, 100), // 2:1 collateralization + a bit to ensure we're under MCR
-        )
-        .unwrap();
+    let collateral_asset_price: Decimal = mcr /
+        201u32 * 100u32 // 2:1 collateralization + a bit to ensure we're under MCR
+        ;
 
-    let liquidation_amount = collateral_asset_price
-        .checked_mul(*target_spread.complement().upcast())
-        .and_then(|x| x.checked_scalar_mul(2000))
-        .and_then(|x| x.ceil())
+    let liquidation_amount = (&collateral_asset_price * (1u32 - target_spread) * 2000u32)
+        .to_u128_ceil()
         .unwrap();
 
     c.liquidate(
@@ -188,7 +180,7 @@ async fn successful_liquidation_with_spread(
         liquidation_amount,
         OraclePriceProof {
             collateral_asset_price,
-            borrow_asset_price: Rational::<u128>::one(),
+            borrow_asset_price: Decimal::one(),
         },
     )
     .await;

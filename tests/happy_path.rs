@@ -1,7 +1,10 @@
+use std::str::FromStr;
+
 use rstest::rstest;
-use templar_common::{asset::FungibleAsset, borrow::BorrowStatus, rational::Rational};
-use test_utils::*;
 use tokio::join;
+
+use templar_common::{asset::FungibleAsset, borrow::BorrowStatus, dec, number::Decimal};
+use test_utils::*;
 
 #[allow(dead_code)]
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -66,10 +69,17 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
         }
     }
 
-    assert_eq!(
-        configuration.minimum_collateral_ratio_per_borrow,
-        Rational::new(120, 100)
+    eprintln!(
+        "{:?}",
+        configuration
+            .minimum_collateral_ratio_per_borrow
+            .abs_diff(&dec!("1.2"))
+            .as_repr(),
     );
+
+    assert!(configuration
+        .minimum_collateral_ratio_per_borrow
+        .near_equal(&dec!("1.2")));
 
     // Step 1: Supply user sends tokens to contract to use for borrows.
     c.supply(&supply_user, 1100).await;

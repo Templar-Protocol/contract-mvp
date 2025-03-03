@@ -2,10 +2,14 @@
 members = [".", "common", "mock/*", "test-utils"]
 
 [workspace.dependencies]
+getrandom = { version = "0.2", features = ["custom"] }
+borsh = { version = "1.5", features = ["unstable__schema"] }
 near-sdk = { version = "5.7", features = ["unstable"] }
 near-contract-standards = "5.7"
 near-workspaces = { version = "0.16", features = ["unstable"] }
+primitive-types = { version = "0.10.1" }
 rstest = { version = "0.24" }
+schemars = { version = "0.8" }
 templar-common = { path = "./common" }
 test-utils = { path = "./test-utils" }
 thiserror = "2.0.11"
@@ -48,6 +52,7 @@ container_build_command = ["cargo", "near", "build"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
+getrandom.workspace = true
 near-sdk.workspace = true
 near-contract-standards.workspace = true
 templar-common.workspace = true
