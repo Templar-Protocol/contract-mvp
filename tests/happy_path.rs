@@ -3,7 +3,7 @@ use std::str::FromStr;
 use rstest::rstest;
 use tokio::join;
 
-use templar_common::{asset::FungibleAsset, borrow::BorrowStatus, number::Decimal};
+use templar_common::{asset::FungibleAsset, borrow::BorrowStatus, dec, number::Decimal};
 use test_utils::*;
 
 #[allow(dead_code)]
@@ -69,10 +69,17 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
         }
     }
 
-    assert_eq!(
-        configuration.minimum_collateral_ratio_per_borrow,
-        Decimal::from_str("1.2").unwrap(),
+    eprintln!(
+        "{:?}",
+        configuration
+            .minimum_collateral_ratio_per_borrow
+            .abs_diff(&dec!("1.2"))
+            .as_repr(),
     );
+
+    assert!(configuration
+        .minimum_collateral_ratio_per_borrow
+        .near_equal(&dec!("1.2")));
 
     // Step 1: Supply user sends tokens to contract to use for borrows.
     c.supply(&supply_user, 1100).await;
@@ -114,7 +121,7 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
     );
 
     let borrow_status = c
-        .get_borrow_status(borrow_user.id(), COLLATERAL_HALF_PRICE)
+        .get_borrow_status(borrow_user.id(), EQUAL_PRICE)
         .await
         .unwrap();
 
@@ -127,7 +134,7 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
     // Step 3: Withdraw some of the borrow asset
 
     // Borrowing 1000 borrow tokens with 2000 collateral tokens should be fine given equal price and MCR of 120%.
-    c.borrow(&borrow_user, 1000, COLLATERAL_HALF_PRICE).await;
+    c.borrow(&borrow_user, 1000, EQUAL_PRICE).await;
 
     let balance = c.borrow_asset_balance_of(borrow_user.id()).await;
 

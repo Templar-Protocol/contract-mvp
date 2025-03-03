@@ -3611,6 +3611,7 @@ dependencies = [
  "near-contract-standards",
  "near-sdk",
  "primitive-types",
+ "rand",
  "rstest",
  "schemars",
  "thiserror 2.0.11",
