@@ -117,6 +117,8 @@ impl Market {
 
         self.record_supply_position_borrow_asset_withdrawal(&mut supply_position, amount);
 
+        self.supply_positions.insert(&account_id, &supply_position);
+
         Ok(Some((account_id, amount)))
     }
 
