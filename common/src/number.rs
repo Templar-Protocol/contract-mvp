@@ -175,11 +175,13 @@ impl Decimal {
 
     pub fn to_fixed(&self, precision: usize) -> String {
         let precision = precision.min(MAX_DECIMAL_PRECISION);
-        format!(
-            "{}.{}",
-            self.repr >> FRACTIONAL_BITS,
-            self.fractional_part_to_dec_string(precision),
-        )
+        let fractional_part = self.fractional_part_to_dec_string(precision);
+        let fractional_part_trimmed = fractional_part.trim_end_matches('0');
+        if fractional_part_trimmed.is_empty() {
+            format!("{}", self.repr >> FRACTIONAL_BITS)
+        } else {
+            format!("{}.{fractional_part_trimmed}", self.repr >> FRACTIONAL_BITS)
+        }
     }
 
     fn fractional_part(&self) -> U512 {
