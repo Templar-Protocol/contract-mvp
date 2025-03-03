@@ -135,7 +135,7 @@ impl WithdrawalQueue {
     /// Unlocks the queue.
     pub fn try_pop(&mut self) -> Option<(AccountId, BorrowAssetAmount)> {
         if !self.is_locked {
-            env::panic_str("Withdrawal queue is locked.");
+            env::panic_str("Withdrawal queue must be locked to pop.");
         }
 
         self.is_locked = false;
@@ -367,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn withdrawal_queue() {
+    fn withdrawal_queueing() {
         let mut wq = WithdrawalQueue::new(b"w");
 
         let alice: AccountId = "alice".parse().unwrap();
@@ -384,12 +384,15 @@ mod tests {
         assert_eq!(wq.peek(), Some((alice.clone(), 99.into())));
         wq.insert_or_update(&bob, 123.into());
         assert_eq!(wq.len(), 2);
+        wq.try_lock().unwrap();
         assert_eq!(wq.try_pop(), Some((alice.clone(), 99.into())));
         assert_eq!(wq.len(), 1);
         wq.insert_or_update(&charlie, 42.into());
         assert_eq!(wq.len(), 2);
+        wq.try_lock().unwrap();
         assert_eq!(wq.try_pop(), Some((bob.clone(), 123.into())));
         assert_eq!(wq.len(), 1);
+        wq.try_lock().unwrap();
         assert_eq!(wq.try_pop(), Some((charlie.clone(), 42.into())));
         assert_eq!(wq.len(), 0);
     }
