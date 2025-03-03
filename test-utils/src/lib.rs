@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{path::Path, str::FromStr};
 
 use near_sdk::{
     json_types::{U128, U64},
@@ -672,6 +672,13 @@ pub fn market_configuration(
     }
 }
 
+async fn compile_contract(p: &str) -> Vec<u8> {
+    let path = Path::new(env!("CARGO_WORKSPACE_DIR")).join(p);
+    near_workspaces::compile_project(path.to_str().unwrap())
+        .await
+        .unwrap()
+}
+
 pub static WASM_MARKET: OnceCell<Vec<u8>> = OnceCell::const_new();
 pub static WASM_MOCK_FT: OnceCell<Vec<u8>> = OnceCell::const_new();
 
@@ -680,7 +687,7 @@ pub async fn setup_market(
     configuration: &MarketConfiguration,
 ) -> Contract {
     let wasm = WASM_MARKET
-        .get_or_init(|| async { near_workspaces::compile_project("./").await.unwrap() })
+        .get_or_init(|| compile_contract("contract/market"))
         .await;
 
     let contract = worker.dev_deploy(wasm).await.unwrap();
@@ -705,11 +712,7 @@ pub async fn deploy_ft(
     supply: u128,
 ) -> Contract {
     let wasm = WASM_MOCK_FT
-        .get_or_init(|| async {
-            near_workspaces::compile_project("./mock/ft/")
-                .await
-                .unwrap()
-        })
+        .get_or_init(|| compile_contract("mock/ft"))
         .await;
 
     let contract = account.deploy(wasm).await.unwrap().unwrap();

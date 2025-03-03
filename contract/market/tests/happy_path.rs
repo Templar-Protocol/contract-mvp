@@ -183,6 +183,12 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
                     balance_after - balance_before,
                     supply_position.borrow_asset_yield.amount.as_u128(),
                 );
+
+                let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
+                assert!(
+                    supply_position.borrow_asset_yield.amount.is_zero(),
+                    "Supply position should not have yield after withdrawing all",
+                );
             }
 
             // Withdraw supply.
@@ -231,6 +237,12 @@ async fn test_happy(#[case] native_asset_case: NativeAssetCase) {
                 let balance_after = c.borrow_asset_balance_of(supply_user.id()).await;
 
                 assert_eq!(balance_after - balance_before, 1100);
+            }
+
+            // Check that supply position is closed.
+            {
+                let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
+                assert!(supply_position.get_borrow_asset_deposit().is_zero());
             }
         },
         // Protocol yield.
