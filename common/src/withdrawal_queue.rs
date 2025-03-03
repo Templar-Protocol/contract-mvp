@@ -2,11 +2,13 @@ use std::num::NonZeroU32;
 
 use near_sdk::{collections::LookupMap, env, near, AccountId, BorshStorageKey, IntoStorageKey};
 
+use crate::asset::BorrowAssetAmount;
+
 #[derive(Debug)]
 #[near(serializers = [borsh])]
 pub struct QueueNode {
     account_id: AccountId,
-    amount: u128,
+    amount: BorrowAssetAmount,
     prev: Option<NonZeroU32>,
     next: Option<NonZeroU32>,
 }
@@ -16,6 +18,7 @@ pub struct QueueNode {
 pub struct WithdrawalQueue {
     prefix: Vec<u8>,
     length: u32,
+    is_locked: bool,
     next_queue_node_id: NonZeroU32,
     queue: LookupMap<NonZeroU32, QueueNode>,
     queue_head: Option<NonZeroU32>,
@@ -41,6 +44,7 @@ impl WithdrawalQueue {
         Self {
             prefix: prefix.clone(),
             length: 0,
+            is_locked: false,
             next_queue_node_id: NonZeroU32::MIN,
             queue: LookupMap::new(key!(Queue)),
             queue_head: None,
@@ -49,11 +53,17 @@ impl WithdrawalQueue {
         }
     }
 
+    #[inline]
     pub fn len(&self) -> u32 {
         self.length
     }
 
-    pub fn get(&self, account_id: &AccountId) -> Option<u128> {
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.length == 0
+    }
+
+    pub fn get(&self, account_id: &AccountId) -> Option<BorrowAssetAmount> {
         self.entries
             .get(account_id)
             .and_then(|node_id| self.queue.get(&node_id))
@@ -69,6 +79,10 @@ impl WithdrawalQueue {
         node_id: NonZeroU32,
         f: impl FnOnce(&mut QueueNode) -> T,
     ) -> T {
+        if self.is_locked && Some(node_id) == self.queue_head {
+            env::panic_str("Cannot mutate withdrawal queue head while queue is locked.");
+        }
+
         let mut node = self
             .queue
             .get(&node_id)
@@ -78,7 +92,7 @@ impl WithdrawalQueue {
         r
     }
 
-    pub fn peek(&self) -> Option<(AccountId, u128)> {
+    pub fn peek(&self) -> Option<(AccountId, BorrowAssetAmount)> {
         if let Some(node_id) = self.queue_head {
             let QueueNode {
                 account_id, amount, ..
@@ -92,7 +106,40 @@ impl WithdrawalQueue {
         }
     }
 
-    pub fn pop(&mut self) -> Option<(AccountId, u128)> {
+    /// # Errors
+    /// - If the queue is already locked.
+    /// - If the queue is empty.
+    pub fn try_lock(
+        &mut self,
+    ) -> Result<(AccountId, BorrowAssetAmount), error::WithdrawalQueueLockError> {
+        if self.is_locked {
+            return Err(error::AlreadyLockedError.into());
+        }
+
+        if let Some(peek) = self.peek() {
+            self.is_locked = true;
+            Ok(peek)
+        } else {
+            Err(error::EmptyError.into())
+        }
+    }
+
+    pub fn unlock(&mut self) {
+        self.is_locked = false;
+    }
+
+    /// Only pops if:
+    /// 1. Queue is non-empty.
+    /// 2. Queue is locked.
+    ///
+    /// Unlocks the queue.
+    pub fn try_pop(&mut self) -> Option<(AccountId, BorrowAssetAmount)> {
+        if !self.is_locked {
+            env::panic_str("Withdrawal queue must be locked to pop.");
+        }
+
+        self.is_locked = false;
+
         if let Some(node_id) = self.queue_head {
             let QueueNode {
                 account_id,
@@ -117,7 +164,13 @@ impl WithdrawalQueue {
         }
     }
 
-    pub fn remove(&mut self, account_id: &AccountId) -> Option<u128> {
+    /// If the queue is locked, accounts can only be removed if they are not
+    /// at the head of the queue.
+    pub fn remove(&mut self, account_id: &AccountId) -> Option<BorrowAssetAmount> {
+        if self.is_locked && self.queue_head == self.entries.get(account_id) {
+            env::panic_str("Cannot remove head while withdrawal queue is locked.");
+        }
+
         if let Some(node_id) = self.entries.remove(account_id) {
             let node = self
                 .queue
@@ -144,14 +197,20 @@ impl WithdrawalQueue {
         }
     }
 
-    pub fn insert_or_update(&mut self, account_id: &AccountId, amount: u128) {
+    #[allow(clippy::missing_panics_doc)]
+    pub fn insert_or_update(&mut self, account_id: &AccountId, amount: BorrowAssetAmount) {
         if let Some(node_id) = self.entries.get(account_id) {
             // update existing
             self.mut_existing_node(node_id, |node| node.amount = amount);
         } else {
             // add new
             let node_id = self.next_queue_node_id;
-            self.next_queue_node_id = self.next_queue_node_id.checked_add(1).unwrap(); // assume the collection never processes more than u32::MAX items
+            {
+                #![allow(clippy::unwrap_used)]
+                // assume the collection never processes more than u32::MAX items
+                self.next_queue_node_id = self.next_queue_node_id.checked_add(1).unwrap();
+            }
+
             if let Some(tail_id) = self.queue_tail {
                 self.mut_existing_node(tail_id, |tail| tail.next = Some(node_id));
             }
@@ -161,7 +220,7 @@ impl WithdrawalQueue {
                 prev: self.queue_tail,
                 next: None,
             };
-            if self.queue_head == None {
+            if self.queue_head.is_none() {
                 self.queue_head = Some(node_id);
             }
             self.queue_tail = Some(node_id);
@@ -173,9 +232,53 @@ impl WithdrawalQueue {
 
     pub fn iter(&self) -> WithdrawalQueueIter {
         WithdrawalQueueIter {
-            withdrawal_queue: &self,
+            withdrawal_queue: self,
             next_node_id: self.queue_head,
         }
+    }
+
+    pub fn get_status(&self) -> WithdrawalQueueStatus {
+        let depth = self
+            .iter()
+            .map(|(_, amount)| amount.as_u128())
+            .sum::<u128>()
+            .into();
+        WithdrawalQueueStatus {
+            depth,
+            length: self.len(),
+        }
+    }
+
+    pub fn get_request_status(&self, account_id: &AccountId) -> Option<WithdrawalRequestStatus> {
+        if !self.contains(account_id) {
+            return None;
+        }
+
+        let mut depth = 0.into();
+        for (index, (current_account, amount)) in self.iter().enumerate() {
+            if &current_account == account_id {
+                return Some(WithdrawalRequestStatus {
+                    // The queue's length is u32, so this will never truncate.
+                    #[allow(clippy::cast_possible_truncation)]
+                    index: index as u32,
+                    depth,
+                    amount,
+                });
+            }
+
+            depth.join(amount);
+        }
+
+        unreachable!()
+    }
+}
+
+impl<'a> IntoIterator for &'a WithdrawalQueue {
+    type IntoIter = WithdrawalQueueIter<'a>;
+    type Item = (AccountId, BorrowAssetAmount);
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
     }
 }
 
@@ -184,8 +287,8 @@ pub struct WithdrawalQueueIter<'a> {
     next_node_id: Option<NonZeroU32>,
 }
 
-impl<'a> Iterator for WithdrawalQueueIter<'a> {
-    type Item = (AccountId, u128);
+impl Iterator for WithdrawalQueueIter<'_> {
+    type Item = (AccountId, BorrowAssetAmount);
 
     fn next(&mut self) -> Option<Self::Item> {
         let next_node_id = self.next_node_id?;
@@ -199,11 +302,49 @@ impl<'a> Iterator for WithdrawalQueueIter<'a> {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[near(serializers = [json])]
+pub struct WithdrawalRequestStatus {
+    pub index: u32,
+    pub depth: BorrowAssetAmount,
+    pub amount: BorrowAssetAmount,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[near(serializers = [json])]
+pub struct WithdrawalQueueStatus {
+    pub depth: BorrowAssetAmount,
+    pub length: u32,
+}
+
+pub mod error {
+    use thiserror::Error;
+
+    #[derive(Error, Debug)]
+    #[error("The withdrawal queue is already locked")]
+    pub struct AlreadyLockedError;
+
+    #[derive(Error, Debug)]
+    #[error("The withdrawal queue is empty")]
+    pub struct EmptyError;
+
+    #[derive(Error, Debug)]
+    #[error("The withdrawal queue could not be locked: {}", .0)]
+    pub enum WithdrawalQueueLockError {
+        #[error(transparent)]
+        AlreadyLocked(#[from] AlreadyLockedError),
+        #[error(transparent)]
+        Empty(#[from] EmptyError),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use near_sdk::AccountId;
 
     use super::WithdrawalQueue;
+
+    // TODO: Test locking.
 
     #[test]
     fn withdrawal_remove() {
@@ -213,20 +354,20 @@ mod tests {
         let bob: AccountId = "bob".parse().unwrap();
         let charlie: AccountId = "charlie".parse().unwrap();
 
-        wq.insert_or_update(&alice, 1);
-        wq.insert_or_update(&bob, 2);
-        wq.insert_or_update(&charlie, 3);
+        wq.insert_or_update(&alice, 1.into());
+        wq.insert_or_update(&bob, 2.into());
+        wq.insert_or_update(&charlie, 3.into());
         assert_eq!(wq.len(), 3);
-        assert_eq!(wq.remove(&bob), Some(2));
+        assert_eq!(wq.remove(&bob), Some(2.into()));
         assert_eq!(wq.len(), 2);
-        assert_eq!(wq.remove(&charlie), Some(3));
+        assert_eq!(wq.remove(&charlie), Some(3.into()));
         assert_eq!(wq.len(), 1);
-        assert_eq!(wq.remove(&alice), Some(1));
+        assert_eq!(wq.remove(&alice), Some(1.into()));
         assert_eq!(wq.len(), 0);
     }
 
     #[test]
-    fn withdrawal_queue() {
+    fn withdrawal_queueing() {
         let mut wq = WithdrawalQueue::new(b"w");
 
         let alice: AccountId = "alice".parse().unwrap();
@@ -235,21 +376,24 @@ mod tests {
 
         assert_eq!(wq.len(), 0);
         assert_eq!(wq.peek(), None);
-        wq.insert_or_update(&alice, 1);
+        wq.insert_or_update(&alice, 1.into());
         assert_eq!(wq.len(), 1);
-        assert_eq!(wq.peek(), Some((alice.clone(), 1)));
-        wq.insert_or_update(&alice, 99);
+        assert_eq!(wq.peek(), Some((alice.clone(), 1.into())));
+        wq.insert_or_update(&alice, 99.into());
         assert_eq!(wq.len(), 1);
-        assert_eq!(wq.peek(), Some((alice.clone(), 99)));
-        wq.insert_or_update(&bob, 123);
+        assert_eq!(wq.peek(), Some((alice.clone(), 99.into())));
+        wq.insert_or_update(&bob, 123.into());
         assert_eq!(wq.len(), 2);
-        assert_eq!(wq.pop(), Some((alice.clone(), 99)));
+        wq.try_lock().unwrap();
+        assert_eq!(wq.try_pop(), Some((alice.clone(), 99.into())));
         assert_eq!(wq.len(), 1);
-        wq.insert_or_update(&charlie, 42);
+        wq.insert_or_update(&charlie, 42.into());
         assert_eq!(wq.len(), 2);
-        assert_eq!(wq.pop(), Some((bob.clone(), 123)));
+        wq.try_lock().unwrap();
+        assert_eq!(wq.try_pop(), Some((bob.clone(), 123.into())));
         assert_eq!(wq.len(), 1);
-        assert_eq!(wq.pop(), Some((charlie.clone(), 42)));
+        wq.try_lock().unwrap();
+        assert_eq!(wq.try_pop(), Some((charlie.clone(), 42.into())));
         assert_eq!(wq.len(), 0);
     }
 }

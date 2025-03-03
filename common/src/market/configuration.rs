@@ -1,44 +1,81 @@
-use near_sdk::{
-    json_types::{U128, U64},
-    near, AccountId,
-};
+use near_sdk::{json_types::U64, near, AccountId};
 
 use crate::{
-    asset::FungibleAsset,
-    borrow::BorrowPosition,
+    asset::{
+        BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
+    },
+    borrow::{BorrowPosition, BorrowStatus, LiquidationReason},
     fee::{Fee, TimeBasedFee},
-    rational::Rational,
+    number::Decimal,
 };
 
-use super::{LiquidationSpread, OraclePriceProof};
+use super::{OraclePriceProof, YieldWeights};
 
 #[derive(Clone, Debug)]
 #[near(serializers = [json, borsh])]
 pub struct MarketConfiguration {
-    pub borrow_asset: FungibleAsset,
-    pub collateral_asset: FungibleAsset,
+    pub borrow_asset: FungibleAsset<BorrowAsset>,
+    pub collateral_asset: FungibleAsset<CollateralAsset>,
     pub balance_oracle_account_id: AccountId,
-    pub liquidator_account_id: AccountId,
-    pub minimum_collateral_ratio_per_borrow: Rational<u16>,
+    pub minimum_collateral_ratio_per_borrow: Decimal,
     /// How much of the deposited principal may be lent out (up to 100%)?
     /// This is a matter of protection for supply providers.
     /// Set to 99% for starters.
-    pub maximum_borrow_asset_usage_ratio: Rational<u16>,
+    pub maximum_borrow_asset_usage_ratio: Decimal,
     /// The origination fee is a one-time amount added to the principal of the
     /// borrow. That is to say, the origination fee is denominated in units of
     /// the borrow asset and is paid by the borrowing account during repayment
     /// (or liquidation).
-    pub origination_fee: Fee,
-    pub annual_maintenance_fee: Fee,
-    pub maximum_borrow_duration: Option<U64>,
-    pub minimum_borrow_amount: U128,
-    pub maximum_borrow_amount: U128,
-    pub withdrawal_fee: TimeBasedFee,
-    pub liquidation_spread: LiquidationSpread,
+    pub borrow_origination_fee: Fee<BorrowAsset>,
+    pub borrow_annual_maintenance_fee: Fee<BorrowAsset>,
+    pub maximum_borrow_duration_ms: Option<U64>,
+    pub minimum_borrow_amount: BorrowAssetAmount,
+    pub maximum_borrow_amount: BorrowAssetAmount,
+    pub supply_withdrawal_fee: TimeBasedFee<CollateralAsset>,
+    pub yield_weights: YieldWeights,
+    /// How far below market rate to accept liquidation? This is effectively the liquidator's spread.
+    ///
+    /// For example, if a 100USDC borrow is (under)collateralized with $110 of
+    /// NEAR, a "maximum liquidator spread" of 10% would mean that a liquidator
+    /// could liquidate this borrow by sending 109USDC, netting the liquidator
+    /// ($110 - $100) * 10% = $1 of NEAR.
+    pub maximum_liquidator_spread: Decimal,
 }
 
 impl MarketConfiguration {
-    pub fn is_healthy(
+    pub fn borrow_status(
+        &self,
+        borrow_position: &BorrowPosition,
+        oracle_price_proof: OraclePriceProof,
+        block_timestamp_ms: u64,
+    ) -> BorrowStatus {
+        if !self.is_within_minimum_collateral_ratio(borrow_position, oracle_price_proof) {
+            return BorrowStatus::Liquidation(LiquidationReason::Undercollateralization);
+        }
+
+        if !self.is_within_maximum_borrow_duration(borrow_position, block_timestamp_ms) {
+            return BorrowStatus::Liquidation(LiquidationReason::Expiration);
+        }
+
+        BorrowStatus::Healthy
+    }
+
+    fn is_within_maximum_borrow_duration(
+        &self,
+        borrow_position: &BorrowPosition,
+        block_timestamp_ms: u64,
+    ) -> bool {
+        if let Some(U64(maximum_duration_ms)) = self.maximum_borrow_duration_ms {
+            borrow_position
+                .started_at_block_timestamp_ms
+                .and_then(|U64(started_at_ms)| block_timestamp_ms.checked_sub(started_at_ms))
+                .map_or(true, |duration_ms| duration_ms <= maximum_duration_ms)
+        } else {
+            true
+        }
+    }
+
+    pub fn is_within_minimum_collateral_ratio(
         &self,
         borrow_position: &BorrowPosition,
         OraclePriceProof {
@@ -46,59 +83,27 @@ impl MarketConfiguration {
             borrow_asset_price,
         }: OraclePriceProof,
     ) -> bool {
-        let scaled_collateral_value = borrow_position.collateral_asset_deposit.0
-            * collateral_asset_price.numerator()
-            * borrow_asset_price.denominator()
-            * self.minimum_collateral_ratio_per_borrow.denominator() as u128;
-        let scaled_borrow_value = borrow_position.borrow_asset_liability.0
-            * borrow_asset_price.numerator()
-            * collateral_asset_price.denominator()
-            * self.minimum_collateral_ratio_per_borrow.numerator() as u128;
+        let scaled_collateral_value =
+            borrow_position.collateral_asset_deposit.as_u128() * collateral_asset_price;
+        let scaled_borrow_value = borrow_position.get_total_borrow_asset_liability().as_u128()
+            * borrow_asset_price
+            * &self.minimum_collateral_ratio_per_borrow;
 
         scaled_collateral_value >= scaled_borrow_value
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use crate::{
-        asset::FungibleAsset,
-        fee::{Fee, TimeBasedFee, TimeBasedFeeFunction},
-        market::{LiquidationSpread, MarketConfiguration},
-        rational::Rational,
-    };
-
-    // {"configuration":{"borrow_asset":{"Nep141":"usdt.fakes.testnet"},"collateral_asset":{"Nep141":"wrap.testnet"},"balance_oracle_account_id":"root.testnet","liquidator_account_id":"templar-in-training.testnet","minimum_collateral_ratio_per_borrow":[6,5],"maximum_borrow_asset_usage_ratio":[99,100],"origination_fee":{"Proportional":[1,100]},"annual_maintenance_fee":{"Flat":"0"},"maximum_borrow_duration":null,"minimum_borrow_amount":"1","maximum_borrow_amount":"340282366920938463463374607431768211455","withdrawal_fee":{"fee":{"Flat":"0"},"duration":"0","behavior":"Fixed"},"liquidation_spread":{"supply_position":"6","liquidator":"1","protocol":"1"}}}
-
-    // #[ignore = "generate sample configuration"]
-    #[test]
-    pub fn generate_sample_configuration() {
-        println!(
-            "{{\"configuration\":{}}}",
-            near_sdk::serde_json::to_string(&MarketConfiguration {
-                borrow_asset: FungibleAsset::Nep141("usdt.fakes.testnet".parse().unwrap()),
-                collateral_asset: FungibleAsset::Nep141("wrap.testnet".parse().unwrap()),
-                balance_oracle_account_id: "root.testnet".parse().unwrap(),
-                liquidator_account_id: "templar-in-training.testnet".parse().unwrap(),
-                minimum_collateral_ratio_per_borrow: Rational::new(120, 100),
-                maximum_borrow_asset_usage_ratio: Rational::new(99, 100),
-                origination_fee: Fee::Proportional(Rational::new(1, 100)),
-                annual_maintenance_fee: Fee::Flat(0.into()),
-                maximum_borrow_duration: None,
-                minimum_borrow_amount: 1.into(),
-                maximum_borrow_amount: u128::MAX.into(),
-                withdrawal_fee: TimeBasedFee {
-                    fee: Fee::Flat(0.into()),
-                    duration: 0.into(),
-                    behavior: TimeBasedFeeFunction::Fixed,
-                },
-                liquidation_spread: LiquidationSpread {
-                    supply_position: 6.into(),
-                    liquidator: 1.into(),
-                    protocol: 1.into(),
-                },
-            })
-            .unwrap()
-        );
+    pub fn minimum_acceptable_liquidation_amount(
+        &self,
+        amount: CollateralAssetAmount,
+        oracle_price_proof: OraclePriceProof,
+    ) -> BorrowAssetAmount {
+        // minimum_acceptable_amount = collateral_amount * (1 - maximum_liquidator_spread) * collateral_price / borrow_price
+        BorrowAssetAmount::new(
+            ((1u32 - &self.maximum_liquidator_spread) * oracle_price_proof.collateral_asset_price
+                / oracle_price_proof.borrow_asset_price
+                * amount.as_u128())
+            .to_u128_ceil()
+            .unwrap(),
+        )
     }
 }
