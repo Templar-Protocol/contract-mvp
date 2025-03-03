@@ -528,20 +528,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "245097e9a4535ee1e3e3931fcfcd55a796a44c643e8596ff6566d68f09b87bbc"
 
 [[package]]
-name = "contract-mvp"
-version = "0.1.0"
-dependencies = [
- "getrandom",
- "near-contract-standards",
- "near-sdk",
- "near-workspaces",
- "rstest",
- "templar-common",
- "test-utils",
- "tokio",
-]
-
-[[package]]
 name = "convert_case"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3615,6 +3601,20 @@ dependencies = [
  "rstest",
  "schemars",
  "thiserror 2.0.11",
+]
+
+[[package]]
+name = "templar-market-contract"
+version = "0.1.0"
+dependencies = [
+ "getrandom",
+ "near-contract-standards",
+ "near-sdk",
+ "near-workspaces",
+ "rstest",
+ "templar-common",
+ "test-utils",
+ "tokio",
 ]
 
 [[package]]
