@@ -1,0 +1,28 @@
+extends = ["../profiles/v1.toml", "../profiles/v1-borrow-ixlmusdc.toml"]
+
+name = "ixlmdejaaa-ixlmusdc-2"
+
+[collateral]
+asset = "nep245:intents.near:nep245:v2_1.omni.hot.tg:1100_111bzQBB66Lr9d7WU1sDna78SqG5x1ZraFjkpPdiYXjHFRnZJUhuV"
+reference = { coin_gecko = { id = "defi-janus-henderson-anemoy-aaa-clo-fund" } }
+decimals = 18
+aggregator = "median_low"
+min_sources = 1
+sources = [
+    # Pyth Lazer has not yet enabled this feed
+    # { kind = "lazer", oracle = "pyth-lazer.v1.tmplr.near", feed_id = 1799, weight = 3 },
+    # { kind = "pyth", oracle = "pyth-oracle.near", price_id = "5ca9c34d00214bf9416439970caf29eb7f379536fcb82ee21e7d7cf69acadf2a", weight = 1 },
+    { kind = "red_stone", oracle = "redstone-adapter.v1.tmplr.near", price_id = "deJAAA_FUNDAMENTAL/USD", weight = 5 },
+]
+
+[market]
+# Flat 3% up to the 90% kink, then straight up to 23% at full usage.
+interest_rate_strategy = { Piecewise = { base = "0.03", optimal = "0.9", rate_1 = "0", rate_2 = "2" } }
+mcr_maintenance = "1.07"
+mcr_liquidation = "1.05"
+maximum_usage_ratio = "0.99"
+liquidation_maximum_spread = "0.025"
+borrow_range = { minimum = "1 atom" }
+supply_range = { minimum = "0.04 tokens" }
+supply_withdrawal_range = { minimum = "0.04 tokens" }
+yield_weights = { supply = 19, static = { "revenue.tmplr.near" = 1 } }
