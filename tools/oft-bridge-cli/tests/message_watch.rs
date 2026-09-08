@@ -25,11 +25,11 @@ fn desired() -> DesiredRouteV1 {
             stellar_passphrase: "Test SDF Network ; September 2015".into(),
             stellar_eid: 40_600,
             stellar_endpoint: templar_oft_bridge_cli::environment::STELLAR_TESTNET_ENDPOINT.into(),
-            stellar_endpoint_code_hash: "01".into(),
+            stellar_endpoint_code_hash: "1".repeat(64),
             evm_chain_id: 11_155_111,
             evm_eid: 40_161,
             evm_endpoint: templar_oft_bridge_cli::environment::SEPOLIA_ENDPOINT.into(),
-            evm_endpoint_code_hash: "02".into(),
+            evm_endpoint_code_hash: "2".repeat(64),
         },
         asset: AssetPolicyV1 {
             kind: AssetKind::NativeSac,

@@ -1,6 +1,7 @@
-//! Governance boundaries: deterministic testnet proposal and signature
-//! paths, and the recovery capability matrix. Mainnet plan, proposal,
-//! signature attach, and ingest paths hard-fail with a policy error.
+//! Governance boundaries: deterministic proposal and external-signature
+//! paths, executed-transaction readback, and the recovery capability matrix.
+//! Mainnet hot-key execution remains disabled; reviewed proposals may be
+//! signed externally and ingested after exact finalized-transaction readback.
 
 use std::collections::BTreeMap;
 
@@ -32,11 +33,29 @@ use crate::error::{Error, Result};
 /// Canonical policy message for every mainnet mutation path.
 pub const PRODUCTION_MUTATION_UNSUPPORTED_V1: &str = "production_mutation_unsupported_v1";
 
-fn require_testnet(environment: Environment) -> Result<()> {
-    if environment.is_mainnet() {
-        return Err(crate::policy_error(
-            PRODUCTION_MUTATION_UNSUPPORTED_V1.to_string(),
-        ));
+fn require_plan_environment(environment: Environment, plan: &ExecutablePlanV1) -> Result<()> {
+    let (stellar_passphrase, evm_chain_id) = match environment {
+        Environment::StellarTestnetSepolia => (
+            crate::environment::STELLAR_TESTNET_PASSPHRASE,
+            11_155_111u64,
+        ),
+        Environment::StellarMainnetEthereum => {
+            (crate::environment::STELLAR_PUBLIC_PASSPHRASE, 1u64)
+        }
+    };
+    if let Some(binding) = &plan.stellar {
+        if binding.network_passphrase != stellar_passphrase {
+            return Err(Error::Policy(
+                "proposal network passphrase differs from the requested environment".into(),
+            ));
+        }
+    }
+    if let Some(binding) = &plan.evm {
+        if binding.chain_id != evm_chain_id.to_string() {
+            return Err(Error::Policy(
+                "proposal chain id differs from the requested environment".into(),
+            ));
+        }
     }
     Ok(())
 }
@@ -646,10 +665,10 @@ pub fn threshold_level(operation: &crate::domain::OperationV1) -> &'static str {
     }
 }
 
-/// Builds a proposal for a plan. Testnet only; mainnet hard-fails.
+/// Builds a deterministic proposal for external authorization.
 pub fn build_proposal(environment: Environment, plan: ExecutablePlanV1) -> Result<ProposalV1> {
-    require_testnet(environment)?;
     validate_plan(&plan)?;
+    require_plan_environment(environment, &plan)?;
     Ok(ProposalV1 {
         schema_name: "proposal".to_string(),
         schema_version: SCHEMA_VERSION,
@@ -658,16 +677,15 @@ pub fn build_proposal(environment: Environment, plan: ExecutablePlanV1) -> Resul
     })
 }
 
-/// Attaches (or deterministically replaces) one signer signature. Testnet
-/// only; mainnet hard-fails.
+/// Verifies and attaches one externally produced Stellar signature.
 pub fn attach_signature(
     environment: Environment,
     proposal: &ProposalV1,
     signer: &str,
     signature: &str,
 ) -> Result<ProposalV1> {
-    require_testnet(environment)?;
     validate_plan(&proposal.plan)?;
+    require_plan_environment(environment, &proposal.plan)?;
     require_fresh_plan(&proposal.plan)?;
     verify_stellar_signature(proposal, signer, signature)?;
     if let Some(existing) = proposal.signatures.get(signer) {
@@ -735,8 +753,8 @@ pub fn signature_verification_data(
     environment: Environment,
     proposal: &ProposalV1,
 ) -> Result<SignatureVerificationDataV1> {
-    require_testnet(environment)?;
     validate_plan(&proposal.plan)?;
+    require_plan_environment(environment, &proposal.plan)?;
     require_fresh_plan(&proposal.plan)?;
     let (vm, sender, sequence_or_nonce, unsigned_payload) =
         match (proposal.plan.stellar.as_ref(), proposal.plan.evm.as_ref()) {
@@ -830,11 +848,10 @@ pub struct CheckedGovernancePolicy;
 impl GovernancePolicyAdapter for CheckedGovernancePolicy {
     fn plan_recovery(
         &self,
-        environment: Environment,
+        _environment: Environment,
         vm: Vm,
         scenario: RecoveryScenario,
     ) -> Result<RecoveryCapabilityV1> {
-        require_testnet(environment)?;
         Ok(recovery_capability(vm, scenario))
     }
 
@@ -876,7 +893,7 @@ fn route_environment(state_path: &Path) -> Result<(RouteStateV1, RouteStore)> {
     Ok((state, store))
 }
 
-/// `proposal create`: re-derives a fresh testnet plan from a draft. The
+/// `proposal create`: re-derives a fresh plan from a draft. The
 /// draft's operation bytes are never trusted; only its identity.
 pub fn create_proposal(
     state_path: &Path,
@@ -886,7 +903,7 @@ pub fn create_proposal(
     evm_rpc: Option<&str>,
 ) -> Result<CommandData> {
     let (state, store) = route_environment(state_path)?;
-    crate::environment::require_testnet(&state.identity)?;
+    crate::environment::classify(&state.identity)?;
     let draft: OperationDraftV1 = read_json(draft_path)?;
     if draft.route_id != state.route_id || draft.desired_sha256 != state.desired_sha256 {
         return Err(Error::Conflict(
@@ -894,6 +911,7 @@ pub fn create_proposal(
         ));
     }
     let plan = with_live_adapters(state_path, stellar_rpc, evm_rpc, |stellar, evm| {
+        crate::environment::verify_live_endpoint_code(&state.identity, stellar, evm)?;
         build_executable_plan(&state, &draft.operation, stellar, evm)
     })?;
     let operation_sha256 = crate::canonical_sha256(&draft.operation)?;
@@ -909,7 +927,7 @@ pub fn create_proposal(
     })
 }
 
-/// `--proposal-out`: serialize an operation as a testnet proposal.
+/// `--proposal-out`: serialize an operation for external authorization.
 pub fn proposal_for_operation(
     state_path: &Path,
     operation: &crate::domain::OperationV1,
@@ -918,8 +936,9 @@ pub fn proposal_for_operation(
     evm_rpc: Option<&str>,
 ) -> Result<CommandData> {
     let (state, store) = route_environment(state_path)?;
-    crate::environment::require_testnet(&state.identity)?;
+    crate::environment::classify(&state.identity)?;
     let plan = with_live_adapters(state_path, stellar_rpc, evm_rpc, |stellar, evm| {
+        crate::environment::verify_live_endpoint_code(&state.identity, stellar, evm)?;
         build_executable_plan(&state, operation, stellar, evm)
     })?;
     let proposal = build_proposal(state.identity.environment, plan)?;
@@ -961,7 +980,7 @@ pub fn ingest_proposal(
     write: bool,
 ) -> Result<CommandData> {
     let state = RouteStore::open(state_path)?.load_state()?;
-    crate::environment::require_testnet(&state.identity)?;
+    crate::environment::classify(&state.identity)?;
     let stellar = stellar_rpc
         .map(crate::stellar::HttpStellarChain::new)
         .transpose()?;
@@ -986,10 +1005,17 @@ pub fn ingest_proposal_with_adapters(
     evm: Option<&dyn crate::evm::EvmChain>,
     write: bool,
 ) -> Result<CommandData> {
-    let (state, store) = route_environment(state_path)?;
-    crate::environment::require_testnet(&state.identity)?;
+    let (initial_state, store) = route_environment(state_path)?;
+    let _write_lock = if write { Some(store.lock()?) } else { None };
+    let state = if write {
+        store.load_state()?
+    } else {
+        initial_state
+    };
+    crate::environment::classify(&state.identity)?;
     let proposal: ProposalV1 = read_json(proposal_path)?;
     validate_plan(&proposal.plan)?;
+    require_plan_environment(state.identity.environment, &proposal.plan)?;
     if proposal.plan.route_id != state.route_id
         || proposal.plan.desired_sha256 != state.desired_sha256
     {
@@ -997,9 +1023,9 @@ pub fn ingest_proposal_with_adapters(
             "proposal does not bind to this route state".into(),
         ));
     }
-    if proposal.plan.expires_at_unix < crate::now_unix()? {
-        return Err(Error::Conflict("proposal has expired".into()));
-    }
+    // Expiry controls review/signing. Once the exact transaction has executed,
+    // custody accounting must still be able to ingest it indefinitely.
+    let ingested_after_review_deadline = crate::now_unix()? > proposal.plan.expires_at_unix;
     if let Some(opening) = &state.opening_custody {
         if proposal.plan.artifact_lock_sha256 != opening.artifact_lock_sha256 {
             return Err(Error::Conflict(
@@ -1008,7 +1034,7 @@ pub fn ingest_proposal_with_adapters(
         }
     }
 
-    let evidence = match (&proposal.plan.stellar, &proposal.plan.evm) {
+    let mut evidence = match (&proposal.plan.stellar, &proposal.plan.evm) {
         (Some(binding), None) => {
             let chain = stellar.ok_or_else(|| {
                 Error::InvalidInput("Stellar RPC URL is required to ingest this proposal".into())
@@ -1019,6 +1045,20 @@ pub fn ingest_proposal_with_adapters(
                     "Stellar transaction is not finalized successful: {}",
                     status.status
                 )));
+            }
+            let included_ledger = status.ledger.ok_or_else(|| {
+                Error::Chain("Stellar transaction response omitted inclusion ledger".into())
+            })?;
+            let latest_ledger = chain.latest_ledger()?;
+            let canonical = chain.transaction_status(executed_tx)?;
+            if latest_ledger <= included_ledger
+                || canonical.status != "success"
+                || canonical.ledger != Some(included_ledger)
+            {
+                return Err(Error::Chain(
+                    "Stellar transaction has not reached canonical successor-ledger finality"
+                        .into(),
+                ));
             }
             let executed_envelope = status.envelope_xdr.as_deref().ok_or_else(|| {
                 Error::Chain("Stellar transaction response omitted envelope XDR".into())
@@ -1033,6 +1073,16 @@ pub fn ingest_proposal_with_adapters(
                 return Err(Error::Conflict(
                     "executed Stellar transaction differs from proposal".into(),
                 ));
+            }
+            if write {
+                if let OperationV1::SendLeg { intent, .. } = &proposal.plan.operation {
+                    crate::canary::record_stellar_source_message(
+                        &store,
+                        intent,
+                        &canonical,
+                        executed_tx,
+                    )?;
+                }
             }
             serde_json::json!({
                 "chain": "stellar",
@@ -1057,6 +1107,35 @@ pub fn ingest_proposal_with_adapters(
                     "EVM transaction is not finalized successful".into(),
                 ));
             }
+            let included_block = receipt
+                .block_number
+                .ok_or_else(|| Error::Chain("EVM receipt omitted inclusion block".into()))?;
+            let included_hash = receipt
+                .raw
+                .get("blockHash")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| Error::Chain("EVM receipt omitted inclusion block hash".into()))?;
+            let latest_block = crate::block_on_result(chain.latest_block())?;
+            let canonical = crate::block_on_result(chain.transaction_receipt(executed_tx))?
+                .ok_or_else(|| Error::Chain("EVM receipt disappeared before finality".into()))?;
+            let canonical_hash = canonical
+                .raw
+                .get("blockHash")
+                .and_then(serde_json::Value::as_str);
+            if latest_block <= included_block
+                || canonical.succeeded != Some(true)
+                || canonical.block_number != Some(included_block)
+                || canonical_hash.is_none_or(|hash| !hash.eq_ignore_ascii_case(included_hash))
+            {
+                return Err(Error::Chain(
+                    "EVM transaction has not reached canonical successor-block finality".into(),
+                ));
+            }
+            if write {
+                if let OperationV1::SendLeg { intent, .. } = &proposal.plan.operation {
+                    crate::canary::record_evm_source_message(&store, intent, &canonical)?;
+                }
+            }
             serde_json::json!({
                 "chain": "evm",
                 "transaction_hash": executed_tx,
@@ -1070,6 +1149,13 @@ pub fn ingest_proposal_with_adapters(
             ))
         }
     };
+    evidence
+        .as_object_mut()
+        .ok_or_else(|| Error::Custody("proposal evidence is not an object".into()))?
+        .insert(
+            "ingested_after_review_deadline".into(),
+            serde_json::Value::Bool(ingested_after_review_deadline),
+        );
 
     if write {
         let stellar = stellar.ok_or_else(|| {
@@ -1078,7 +1164,6 @@ pub fn ingest_proposal_with_adapters(
         let evm = evm.ok_or_else(|| {
             Error::InvalidInput("both chain adapters are required for proposal readback".into())
         })?;
-        let _lock = store.lock()?;
         let mut observed = store.load_state()?;
         match crate::route::apply_live_readback(
             stellar,
@@ -1338,7 +1423,8 @@ fn json_uint(value: &serde_json::Value) -> Result<String> {
     Ok(parsed.to_string())
 }
 
-/// `proposal stellar-signature attach`: testnet only; writes a new proposal file.
+/// `proposal stellar-signature attach`: verifies an external signature and
+/// writes a new proposal file.
 pub fn attach_signature_command(
     state_path: &Path,
     proposal_path: &Path,
@@ -1347,7 +1433,7 @@ pub fn attach_signature_command(
     out: &Path,
 ) -> Result<CommandData> {
     let (state, _store) = route_environment(state_path)?;
-    crate::environment::require_testnet(&state.identity)?;
+    crate::environment::classify(&state.identity)?;
     let proposal: ProposalV1 = read_json(proposal_path)?;
     let attached = attach_signature(state.identity.environment, &proposal, public_key, signature)?;
     crate::state::write_create_new_json(out, &attached)?;
@@ -1360,7 +1446,7 @@ pub fn attach_signature_command(
 /// `proposal stellar-signature verify`: read-only typed verification data.
 pub fn verify_stellar_proposal(state_path: &Path, proposal_path: &Path) -> Result<CommandData> {
     let (state, _store) = route_environment(state_path)?;
-    crate::environment::require_testnet(&state.identity)?;
+    crate::environment::classify(&state.identity)?;
     let proposal: ProposalV1 = read_json(proposal_path)?;
     let data = signature_verification_data(state.identity.environment, &proposal)?;
     Ok(CommandData {
@@ -1395,9 +1481,10 @@ pub fn verify_safe_proposal(
     use std::str::FromStr as _;
 
     let (state, _store) = route_environment(state_path)?;
-    crate::environment::require_testnet(&state.identity)?;
+    crate::environment::classify(&state.identity)?;
     let proposal: ProposalV1 = read_json(proposal_path)?;
     validate_plan(&proposal.plan)?;
+    require_plan_environment(state.identity.environment, &proposal.plan)?;
     require_fresh_plan(&proposal.plan)?;
     if proposal.plan.route_id != state.route_id
         || proposal.plan.desired_sha256 != state.desired_sha256

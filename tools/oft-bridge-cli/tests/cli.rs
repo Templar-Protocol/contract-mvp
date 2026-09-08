@@ -50,11 +50,11 @@ fn init_preview_does_not_write_state() {
                 "stellar_passphrase":"Test SDF Network ; September 2015",
                 "stellar_eid":40600,
                 "stellar_endpoint":"CALTBA5S6GRJEHAXFP45LGGLKWWAF7HTZCPNUBUJF2HWWRRLQNV35AIV",
-                "stellar_endpoint_code_hash":"01",
+                "stellar_endpoint_code_hash":"1111111111111111111111111111111111111111111111111111111111111111",
                 "evm_chain_id":11_155_111,
                 "evm_eid":40161,
                 "evm_endpoint":"0x6EDCE65403992e310A62460808c4b910D972f10f",
-                "evm_endpoint_code_hash":"02"
+                "evm_endpoint_code_hash":"2222222222222222222222222222222222222222222222222222222222222222"
             },
             "asset":{"kind":"native_sac","asset_id":"native","local_decimals":7},
             "stellar_owner":"GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
@@ -82,7 +82,7 @@ fn init_preview_does_not_write_state() {
 }
 
 #[test]
-fn mainnet_mutation_is_hard_disabled() {
+fn mainnet_direct_execution_is_hard_disabled() {
     let directory = tempfile::tempdir().expect("tempdir");
     let state = directory.path().join("state");
     fs::create_dir(&state).expect("state directory");
@@ -96,10 +96,10 @@ fn mainnet_mutation_is_hard_disabled() {
                 "stellar_passphrase":"Public Global Stellar Network ; September 2015",
                 "stellar_eid":30600,
                 "stellar_endpoint":"CCQLLRE5JBAWYCW3KTWOIWLMFDUOKROQVZNSALQMGOSXNW3ERUOWTZGK",
-                "stellar_endpoint_code_hash":"01",
+                "stellar_endpoint_code_hash":"1111111111111111111111111111111111111111111111111111111111111111",
                 "evm_chain_id":1,"evm_eid":30101,
-                "evm_endpoint":"0x0000000000000000000000000000000000000001",
-                "evm_endpoint_code_hash":"02"
+                "evm_endpoint":"0x1a44076050125825900e736c501f859c50fE728c",
+                "evm_endpoint_code_hash":"2222222222222222222222222222222222222222222222222222222222222222"
             },
             "asset":{"kind":"native_sac","asset_id":"native","local_decimals":7},
             "opening_custody":null,"operations_log":"operations.jsonl","messages_log":"messages.jsonl","lock_file":".lock",
@@ -110,24 +110,32 @@ fn mainnet_mutation_is_hard_disabled() {
     fs::write(state.join("operations.jsonl"), "").expect("operations");
     fs::write(state.join("messages.jsonl"), "").expect("messages");
 
+    let operations = directory.path().join("operation-store");
+    fs::create_dir(&operations).expect("operation store");
     let output = binary()
-        .args(["contain", "outbound", "--state"])
+        .args(["authority", "evm-set-delegate", "--state"])
         .arg(&state)
         .args([
-            "--direction",
-            "stellar-to-evm",
-            "--proposal-out",
-            "proposal.json",
+            "--delegate",
+            "0x1111111111111111111111111111111111111111",
+            "--execute",
+            "--operation-store-root",
         ])
+        .arg(&operations)
         .output()
         .expect("run CLI");
-    assert_eq!(output.status.code(), Some(3));
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "stderr: {}\nstdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
     let envelope: Value = serde_json::from_slice(&output.stdout).expect("JSON output");
     assert_eq!(
         envelope["error"]["code"],
         "production_mutation_unsupported_v1"
     );
-    assert!(!directory.path().join("proposal.json").exists());
 }
 
 #[test]

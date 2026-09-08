@@ -1,4 +1,4 @@
-//! Recovery capability matrix and governance mainnet hard-disable tests.
+//! Recovery capability matrix and governance production-policy tests.
 
 use std::collections::BTreeMap;
 
@@ -17,16 +17,17 @@ use templar_oft_bridge_cli::error::Error;
 use templar_oft_bridge_cli::governance::{
     attach_signature, build_proposal, recovery_capability, signature_verification_data,
     CheckedGovernancePolicy, GovernancePolicyAdapter, RecoveryCapabilityV1, RecoveryMechanism,
-    RecoveryScenario, PRODUCTION_MUTATION_UNSUPPORTED_V1,
+    RecoveryScenario,
 };
 
 const SECRET: &str = "SD7X7LEHBNMUIKQGKPARG5TDJNBHKC346OUARHGZL5ITC6IJPXHILY36";
 const SIGNER: &str = "GDFQVQCYYB7GKCGSCUSIQYXTPLV5YJ3XWDMWGQMDNM4EAXAL7LITIBQ7";
 const PASSPHRASE: &str = "Test SDF Network ; September 2015";
+const MAINNET_PASSPHRASE: &str = "Public Global Stellar Network ; September 2015";
 
-fn envelope() -> String {
+fn envelope_for(passphrase: &str) -> String {
     let mut account = Account::new(SIGNER, "6").unwrap();
-    TransactionBuilder::new(&mut account, PASSPHRASE, None)
+    TransactionBuilder::new(&mut account, passphrase, None)
         .fee(100u32)
         .build_for_simulation()
         .to_envelope()
@@ -36,9 +37,10 @@ fn envelope() -> String {
 }
 
 fn signature(proposal: &ProposalV1) -> String {
+    let passphrase = &proposal.plan.stellar.as_ref().unwrap().network_passphrase;
     let transaction = Transaction::from_xdr_envelope(
         &proposal.plan.stellar.as_ref().unwrap().envelope_xdr,
-        PASSPHRASE,
+        passphrase,
     );
     hex::encode(
         Keypair::from_secret(SECRET)
@@ -49,6 +51,11 @@ fn signature(proposal: &ProposalV1) -> String {
 }
 
 fn plan() -> ExecutablePlanV1 {
+    plan_for(PASSPHRASE)
+}
+
+fn plan_for(passphrase: &str) -> ExecutablePlanV1 {
+    let envelope = envelope_for(passphrase);
     ExecutablePlanV1 {
         schema_name: "executable_plan".to_string(),
         schema_version: SCHEMA_VERSION,
@@ -59,16 +66,16 @@ fn plan() -> ExecutablePlanV1 {
         simulation_sha256: "sim".to_string(),
         expires_at_unix: u64::MAX,
         stellar: Some(templar_oft_bridge_cli::domain::StellarPlanBindingV1 {
-            network_passphrase: PASSPHRASE.to_string(),
+            network_passphrase: passphrase.to_string(),
             source_account: SIGNER.to_string(),
             sequence: "7".to_string(),
             min_ledger: 1,
             max_ledger: 100,
             auth_entries: Vec::new(),
-            envelope_xdr: envelope(),
+            envelope_xdr: envelope.clone(),
             envelope_sha256: hex::encode(sha2::Sha256::digest(
                 base64::engine::general_purpose::STANDARD
-                    .decode(envelope())
+                    .decode(envelope)
                     .unwrap(),
             )),
             simulation_ledger: 50,
@@ -152,27 +159,42 @@ fn acknowledged_unsettled_splits_by_vm() {
 }
 
 #[test]
-fn mainnet_recovery_path_hard_fails_with_policy_error() {
-    let error = CheckedGovernancePolicy
+fn mainnet_recovery_can_be_planned_for_external_authorization() {
+    let capability = CheckedGovernancePolicy
         .plan_recovery(
             Environment::StellarMainnetEthereum,
             Vm::Stellar,
             RecoveryScenario::PacketUndelivered,
         )
-        .unwrap_err();
-    assert_eq!(error.code(), PRODUCTION_MUTATION_UNSUPPORTED_V1);
+        .expect("mainnet recovery plan");
+    assert_eq!(
+        capability,
+        RecoveryCapabilityV1::Authorized {
+            mechanism: RecoveryMechanism::OperatorResend,
+            requires_source_account: true,
+        }
+    );
 }
 
 #[test]
-fn mainnet_proposal_and_signature_paths_hard_fail() {
+fn mainnet_proposal_and_external_signature_paths_are_allowed() {
     let environment = Environment::StellarMainnetEthereum;
-    let proposal = proposal();
-    let built = build_proposal(environment, plan()).unwrap_err();
-    assert_eq!(built.code(), PRODUCTION_MUTATION_UNSUPPORTED_V1);
-    let attached = attach_signature(environment, &proposal, "GSIGNER", "sig").unwrap_err();
-    assert_eq!(attached.code(), PRODUCTION_MUTATION_UNSUPPORTED_V1);
-    let verified = signature_verification_data(environment, &proposal).unwrap_err();
-    assert_eq!(verified.code(), PRODUCTION_MUTATION_UNSUPPORTED_V1);
+    let built =
+        build_proposal(environment, plan_for(MAINNET_PASSPHRASE)).expect("mainnet proposal");
+    let signature = signature(&built);
+    let attached = attach_signature(environment, &built, SIGNER, &signature)
+        .expect("verified external mainnet signature");
+    let verified =
+        signature_verification_data(environment, &attached).expect("mainnet verification data");
+    assert_eq!(verified.attached_weight, 1);
+    assert!(verified.threshold_satisfied);
+}
+
+#[test]
+fn proposal_environment_mismatch_fails_closed() {
+    let error = build_proposal(Environment::StellarMainnetEthereum, plan())
+        .expect_err("testnet-bound plan must not become a mainnet proposal");
+    assert!(matches!(error, Error::Policy(_)));
 }
 
 #[test]
@@ -195,7 +217,7 @@ fn testnet_proposal_attach_and_verification_are_deterministic() {
     assert_eq!(data.route_id, "route-recovery");
     assert_eq!(data.sender, SIGNER);
     assert_eq!(data.sequence_or_nonce, "7");
-    assert_eq!(data.unsigned_payload, envelope());
+    assert_eq!(data.unsigned_payload, envelope_for(PASSPHRASE));
     assert_eq!(data.unsigned_payload_sha256.len(), 64);
     assert_eq!(data.plan_sha256.len(), 64);
     assert_eq!(data.expires_at_unix, u64::MAX);

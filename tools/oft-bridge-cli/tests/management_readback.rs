@@ -227,11 +227,11 @@ fn route_state() -> RouteStateV1 {
             stellar_passphrase: STELLAR_TESTNET_PASSPHRASE.into(),
             stellar_eid: STELLAR_TESTNET_EID,
             stellar_endpoint: STELLAR_TESTNET_ENDPOINT.into(),
-            stellar_endpoint_code_hash: "endpoint-code-hash".into(),
+            stellar_endpoint_code_hash: "1".repeat(64),
             evm_chain_id: 11_155_111,
             evm_eid: SEPOLIA_EID,
             evm_endpoint: SEPOLIA_ENDPOINT.into(),
-            evm_endpoint_code_hash: "endpoint-code-hash".into(),
+            evm_endpoint_code_hash: "2".repeat(64),
         },
         asset: AssetPolicyV1 {
             kind: AssetKind::IssuedSep41,

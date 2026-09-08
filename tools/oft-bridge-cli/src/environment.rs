@@ -16,6 +16,7 @@ pub const STELLAR_TESTNET_ENDPOINT: &str =
 pub const STELLAR_MAINNET_ENDPOINT: &str =
     "CCQLLRE5JBAWYCW3KTWOIWLMFDUOKROQVZNSALQMGOSXNW3ERUOWTZGK";
 pub const SEPOLIA_ENDPOINT: &str = "0x6EDCE65403992e310A62460808c4b910D972f10f";
+pub const ETHEREUM_ENDPOINT: &str = "0x1a44076050125825900e736c501f859c50fE728c";
 
 pub fn classify(identity: &ChainIdentityV1) -> Result<Environment> {
     let environment = if identity.stellar_passphrase == STELLAR_TESTNET_PASSPHRASE
@@ -36,6 +37,9 @@ pub fn classify(identity: &ChainIdentityV1) -> Result<Environment> {
             && identity.stellar_endpoint == STELLAR_MAINNET_ENDPOINT
             && identity.evm_chain_id == 1
             && identity.evm_eid == ETHEREUM_EID
+            && identity
+                .evm_endpoint
+                .eq_ignore_ascii_case(ETHEREUM_ENDPOINT)
         {
             Environment::StellarMainnetEthereum
         } else {
@@ -48,13 +52,49 @@ pub fn classify(identity: &ChainIdentityV1) -> Result<Environment> {
     if identity.environment != environment {
         return Err(Error::Policy("requested_environment_mismatch".into()));
     }
-    if identity.stellar_endpoint_code_hash.is_empty() || identity.evm_endpoint_code_hash.is_empty()
+    let valid_code_hash = |value: &str| {
+        let value = value.trim_start_matches("0x");
+        value.len() == 64 && hex::decode(value).is_ok()
+    };
+    if !valid_code_hash(&identity.stellar_endpoint_code_hash)
+        || !valid_code_hash(&identity.evm_endpoint_code_hash)
     {
         return Err(Error::InvalidInput(
-            "endpoint code hashes are required for environment binding".into(),
+            "endpoint code hashes must be 32-byte hex digests".into(),
         ));
     }
     Ok(environment)
+}
+
+/// Verifies the deployed endpoint programs against the code identities bound
+/// into authoritative route state. Production proposal creation must pass this
+/// live check before an externally signable payload is emitted.
+pub fn verify_live_endpoint_code(
+    identity: &ChainIdentityV1,
+    stellar: &dyn StellarChain,
+    evm: &dyn EvmChain,
+) -> Result<()> {
+    let stellar_hash = stellar.contract_code_hash(&identity.stellar_endpoint)?;
+    if !stellar_hash
+        .trim_start_matches("0x")
+        .eq_ignore_ascii_case(identity.stellar_endpoint_code_hash.trim_start_matches("0x"))
+    {
+        return Err(Error::Chain(
+            "Stellar endpoint code hash differs from the bound identity".into(),
+        ));
+    }
+    let endpoint = crate::evm::parse_address(&identity.evm_endpoint)?;
+    let code = crate::block_on_result(evm.code(endpoint))?;
+    if code.is_empty() {
+        return Err(Error::Chain("EVM endpoint has no deployed code".into()));
+    }
+    let evm_hash = hex::encode(crate::evm::keccak256_of(&code));
+    if !evm_hash.eq_ignore_ascii_case(identity.evm_endpoint_code_hash.trim_start_matches("0x")) {
+        return Err(Error::Chain(
+            "EVM endpoint code hash differs from the bound identity".into(),
+        ));
+    }
+    Ok(())
 }
 
 pub fn require_testnet(identity: &ChainIdentityV1) -> Result<()> {
@@ -91,6 +131,7 @@ pub fn init_environment(
     })?;
     let stellar = crate::stellar::HttpStellarChain::new(stellar_rpc)?;
     let evm = crate::evm::HttpEvmChain::new(evm_rpc)?;
+    verify_live_endpoint_code(identity, &stellar, &evm)?;
     let live_passphrase = stellar.network_passphrase()?;
     if live_passphrase != identity.stellar_passphrase {
         return Err(Error::Chain(format!(
@@ -121,4 +162,42 @@ pub fn init_environment(
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mainnet_identity(evm_endpoint: &str) -> ChainIdentityV1 {
+        ChainIdentityV1 {
+            environment: Environment::StellarMainnetEthereum,
+            stellar_passphrase: STELLAR_PUBLIC_PASSPHRASE.into(),
+            stellar_eid: STELLAR_MAINNET_EID,
+            stellar_endpoint: STELLAR_MAINNET_ENDPOINT.into(),
+            stellar_endpoint_code_hash: "a".repeat(64),
+            evm_chain_id: 1,
+            evm_eid: ETHEREUM_EID,
+            evm_endpoint: evm_endpoint.into(),
+            evm_endpoint_code_hash: "b".repeat(64),
+        }
+    }
+
+    #[test]
+    fn ethereum_mainnet_requires_the_official_endpoint_v2() {
+        assert_eq!(
+            classify(&mainnet_identity(ETHEREUM_ENDPOINT)).expect("official endpoint"),
+            Environment::StellarMainnetEthereum
+        );
+        assert_eq!(
+            classify(&mainnet_identity(&ETHEREUM_ENDPOINT.to_ascii_uppercase()))
+                .expect("address comparison is case-insensitive"),
+            Environment::StellarMainnetEthereum
+        );
+
+        let error = classify(&mainnet_identity(SEPOLIA_ENDPOINT))
+            .expect_err("mainnet identity with the Sepolia endpoint must fail closed");
+        assert!(
+            matches!(error, Error::Policy(message) if message == "unknown_or_mixed_environment")
+        );
+    }
 }

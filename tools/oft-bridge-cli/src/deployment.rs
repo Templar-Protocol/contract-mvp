@@ -402,8 +402,8 @@ pub fn apply_runtime_readback(
     Ok(hash)
 }
 
-/// Fail-closed adoption check. Testnet is required (mainnet mutation is
-/// hard-disabled in v1); adoption requires the exact runtime readback from
+/// Fail-closed adoption check. Adoption is a local state binding and is
+/// available on recognized environments; it requires exact runtime readback from
 /// [`apply_runtime_readback`]; recorded route state must match the proof
 /// exactly or the adoption is a hard conflict, never a silent overwrite.
 /// When route state already records both exact deployments the verdict is
@@ -414,7 +414,7 @@ pub fn adoption_verdict(
     proof: &DeploymentProofV1,
     state: &RouteStateV1,
 ) -> Result<AdoptionVerdictV1> {
-    environment::require_testnet(identity)?;
+    environment::classify(identity)?;
     if plan.route_id != state.route_id {
         return Err(Error::Conflict(
             "wrap plan route differs from the route state".into(),

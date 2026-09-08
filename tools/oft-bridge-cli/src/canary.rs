@@ -17,10 +17,10 @@ fn route_read(state_path: &Path) -> Result<crate::domain::RouteStateV1> {
     Ok(state)
 }
 
-/// Mutation route access: testnet only in v1.
+/// Route access for send/recovery validation and proposal planning. Direct
+/// mainnet signing is rejected later at the execution boundary.
 fn route_environment(state_path: &Path) -> Result<crate::domain::RouteStateV1> {
     let state = route_read(state_path)?;
-    crate::environment::require_testnet(&state.identity)?;
     Ok(state)
 }
 

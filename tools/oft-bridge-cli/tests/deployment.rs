@@ -434,7 +434,7 @@ fn adoption_rejects_opening_custody_lock_drift() -> Result<()> {
 }
 
 #[test]
-fn mainnet_adoption_is_refused_as_production_mutation_unsupported() -> Result<()> {
+fn mainnet_adoption_requires_exact_runtime_readback() -> Result<()> {
     let mainnet_identity = ChainIdentityV1 {
         environment: Environment::StellarMainnetEthereum,
         stellar_passphrase: MAINNET_PASSPHRASE.into(),
@@ -443,20 +443,29 @@ fn mainnet_adoption_is_refused_as_production_mutation_unsupported() -> Result<()
         stellar_endpoint_code_hash: "0".repeat(64),
         evm_chain_id: 1,
         evm_eid: 30101,
-        evm_endpoint: "0x6EDCE65403992e310A62460808c4b910D972f10f".into(),
+        evm_endpoint: templar_oft_bridge_cli::environment::ETHEREUM_ENDPOINT.into(),
         evm_endpoint_code_hash: "0".repeat(64),
     };
     let desired = desired(mainnet_identity);
     let plan = plan(&desired)?;
     let binding = bind(&desired, &plan, Some(init_hash_from_lock()))?;
-    let proven = deployment_proof(&desired, DESIRED_DIGEST, &plan, &binding)?;
+    let mut proven = deployment_proof(&desired, DESIRED_DIGEST, &plan, &binding)?;
     let state = route_state(&desired, BTreeMap::new());
     let error = adoption_verdict(&desired.identity, &plan, &proven, &state)
-        .expect_err("mainnet adoption must be refused in v1");
-    match error {
-        Error::Policy(message) => assert_eq!(message, "production_mutation_unsupported_v1"),
-        other => panic!("unexpected error: {other:?}"),
-    }
+        .expect_err("mainnet adoption without readback must fail closed");
+    assert!(matches!(error, Error::Custody(_)));
+
+    let expected = hex::encode(templar_oft_bridge_cli::evm::keccak256_of(RUNTIME_CODE));
+    apply_runtime_readback(
+        &FakeEvm {
+            code: RUNTIME_CODE.to_vec(),
+        },
+        &mut proven.evm,
+        &expected,
+    )?;
+    let verdict = adoption_verdict(&desired.identity, &plan, &proven, &state)?;
+    assert_eq!(verdict.environment, Environment::StellarMainnetEthereum);
+    assert!(!verdict.already_satisfied);
     Ok(())
 }
 

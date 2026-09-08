@@ -44,6 +44,9 @@ RUN groupadd --system --gid 10001 templar && \
 COPY --from=builder \
     /usr/src/templar/target/release/tmplr-oft-bridge \
     /usr/local/bin/tmplr-oft-bridge
+COPY --from=builder \
+    /usr/src/templar/tools/oft-bridge-cli/ops/monitor-route.sh \
+    /usr/local/bin/oft-monitor-route
 
 # Artifact verification and artifact-build planning resolve these immutable
 # inputs through the compile-time CARGO_MANIFEST_DIR path.
@@ -60,7 +63,7 @@ VOLUME ["/data/routes", "/data/operations"]
 
 USER templar
 
-RUN tmplr-oft-bridge --version >/dev/null
+RUN test -x /usr/local/bin/oft-monitor-route && tmplr-oft-bridge --version >/dev/null
 
 ENTRYPOINT ["tmplr-oft-bridge"]
 CMD ["--help"]

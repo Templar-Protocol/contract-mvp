@@ -831,11 +831,11 @@ pub fn require_convergence(plan: &RouteMutationPlanV1) -> Result<()> {
     )))
 }
 
-/// Testnet-only mutation gate for route configuration writes. V1 permits no
-/// production mutation: a mainnet-classified identity is refused with
-/// `production_mutation_unsupported_v1` before any write is planned.
+/// Requires a recognized, fully bound environment before planning route
+/// configuration. Direct mainnet execution is rejected at the signer boundary;
+/// this planner remains available for externally authorized proposals.
 pub fn mutation_gate(identity: &ChainIdentityV1) -> Result<()> {
-    crate::environment::require_testnet(identity)
+    crate::environment::classify(identity).map(|_| ())
 }
 
 fn decode_evm_word_address(value: &[u8], label: &str) -> Result<String> {

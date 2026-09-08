@@ -21,11 +21,11 @@ fn desired() -> DesiredRouteV1 {
             stellar_passphrase: "Test SDF Network ; September 2015".into(),
             stellar_eid: 40_600,
             stellar_endpoint: "CALTBA5S6GRJEHAXFP45LGGLKWWAF7HTZCPNUBUJF2HWWRRLQNV35AIV".into(),
-            stellar_endpoint_code_hash: "01".into(),
+            stellar_endpoint_code_hash: "1".repeat(64),
             evm_chain_id: 11_155_111,
             evm_eid: 40_161,
             evm_endpoint: "0x6EDCE65403992e310A62460808c4b910D972f10f".into(),
-            evm_endpoint_code_hash: "02".into(),
+            evm_endpoint_code_hash: "2".repeat(64),
         },
         asset: AssetPolicyV1 {
             kind: AssetKind::NativeSac,

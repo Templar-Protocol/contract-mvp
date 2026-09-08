@@ -212,6 +212,98 @@ identity before creating authoritative state.
 Use `message recover` only for a recorded GUID after reviewing its current stage. Contain outbound
 traffic before recovery when custody or route configuration is uncertain.
 
+## Production monitoring
+
+[`ops/compose.yaml`](ops/compose.yaml) runs a credential-free route monitor around the packaged CLI.
+On every interval it runs both `health` and `reconcile --fail-on-deficit` against the mounted route
+state. Any health finding, custody deficit, corrupt log, unreadable state, or invalid configuration
+causes a nonzero exit. Compose restarts the service, while the restart count, JSON logs, and Docker
+health status remain available to an external alert manager.
+
+The monitor has no network access and cannot sign or submit transactions. It evaluates the latest
+authoritative state and custody observations already recorded by an operator workflow. Chain
+watching and observation refresh must therefore run separately, with the narrow RPC and signer
+access appropriate to those operations.
+
+Copy the example environment file outside the repository, replace every path, and set the image to
+the reviewed `sha256` digest published for the release:
+
+```sh
+cp tools/oft-bridge-cli/ops/monitor.env.example /etc/templar/oft-monitor.env
+chmod 0600 /etc/templar/oft-monitor.env
+
+docker compose \
+  --env-file /etc/templar/oft-monitor.env \
+  --file tools/oft-bridge-cli/ops/compose.yaml \
+  config
+
+docker compose \
+  --env-file /etc/templar/oft-monitor.env \
+  --file tools/oft-bridge-cli/ops/compose.yaml \
+  run --rm route-monitor --once
+
+docker compose \
+  --env-file /etc/templar/oft-monitor.env \
+  --file tools/oft-bridge-cli/ops/compose.yaml \
+  up --detach
+```
+
+The routes and operation-store directories are durable operator records even though the monitor
+mounts them read-only. Back them up together and mount the same directories into chain-connected
+operator jobs. The monitor mounts no secrets or reviewed inputs, and Compose refuses to create any
+missing bind source.
+
+Alert on an unhealthy container, a rising restart count, or either `route health check failed` or
+`custody reconciliation failed` in the service logs. A restart can restore monitoring after a
+transient filesystem problem; it does not clear a finding or custody deficit.
+
+## Image promotion and rollback
+
+The publish workflow emits a version tag and a `sha-<commit>` tag. Resolve the reviewed image to its
+registry digest after publication and record that digest with the deployment change. Production
+Compose configuration must use `ghcr.io/templar-protocol/oft-bridge-cli@sha256:...`; mutable tags,
+including version tags, are discovery aliases rather than deployment identities.
+
+Promote an image by running the one-shot monitor against a read-only copy of production state,
+reviewing its JSON output, then updating only `OFT_BRIDGE_IMAGE` to the approved digest and recreating
+the service:
+
+```sh
+docker compose --env-file /etc/templar/oft-monitor.env \
+  --file tools/oft-bridge-cli/ops/compose.yaml \
+  up --detach --force-recreate
+```
+
+Keep the immediately previous approved digest in the deployment record. To roll back, restore that
+exact digest, rerun the one-shot check, and recreate the service. Route and operation state are not
+rolled back with the binary; they are append-only custody evidence and must continue from the latest
+valid state.
+
+## Mainnet proposal-only workflow
+
+Mainnet operators should keep direct execution credentials out of this CLI environment. Prepare a
+closed operation draft, create the chain-specific proposal, and verify that proposal against current
+route state and live RPC observations. Stellar signatures and EVM Safe approvals happen in their
+respective external governance systems; `proposal stellar-signature attach` only records a supplied
+public signature in a new artifact. The CLI must never receive `--execute` for a mainnet route.
+
+Use this sequence for each production change:
+
+1. Run `health`, `reconcile --fail-on-deficit`, `artifact verify`, and `route inspect` against the
+   current state.
+2. Create a new operation artifact with `operation draft`; write every output to a create-new file.
+3. Convert it with `proposal create`, then run `proposal stellar-signature verify` for Stellar or
+   `proposal safe-verify` against the exact Safe transaction for EVM.
+4. Submit the verified proposal through the external multisig or governance process.
+5. After finality, run `proposal ingest --executed-tx ...` first as a preview and then with `--write`
+   to bind the externally executed transaction into route history.
+6. Run health and deficit-failing reconciliation again before preparing the next proposal.
+
+Generated drafts and proposals are single-use review artifacts. A state, nonce, authority, code,
+configuration, or simulation change invalidates the review; discard the artifact and create a new
+one. Proposal creation, verification, and ingest do not grant authorization to execute a chain
+transaction, and direct mainnet signing remains blocked.
+
 ## Command groups
 
 | Command | Purpose |
@@ -227,7 +319,7 @@ traffic before recovery when custody or route configuration is uncertain.
 | `message watch`, `message recover` | Follow or recover a recorded LayerZero packet. |
 | `evidence import` | Validate and append a historical custody evidence bundle. |
 | `reconcile`, `health` | Check lockbox/supply accounting, packet state, configuration drift, and health findings. |
-| `operation ...`, `proposal ...` | Create closed operations and externally authorized testnet proposal artifacts. |
+| `operation ...`, `proposal ...` | Create closed operations and externally authorized proposal artifacts. |
 
 Run `tmplr-oft-bridge <group> --help` for the exact arguments supported by the installed version.
 
@@ -236,17 +328,18 @@ Run `tmplr-oft-bridge <group> --help` for the exact arguments supported by the i
 The CLI is deliberately fail-closed:
 
 - It recognizes only the release-reviewed Stellar-testnet/Sepolia and Stellar-mainnet/Ethereum
-  environment classifications. Unknown or mixed identities fail classification.
-- All mainnet mutation, proposal creation, signature attachment, and execution-ingest paths return
-  `production_mutation_unsupported_v1`. Mainnet use is limited to inspection, artifact verification,
-  evidence validation/import, reconciliation, health reporting, and non-authoritative drafting.
+  environment classifications. Unknown or mixed identities fail classification, and initialization,
+  adoption, and proposal creation verify both deployed endpoint code hashes against route state.
+- Direct mainnet mutation and CLI-held signing return `production_mutation_unsupported_v1`.
+  Mainnet proposal creation, attachment of externally produced public signatures, proposal
+  verification, and finalized-transaction ingest are allowed only through the proposal workflow.
 - USDC is rejected with `unsupported_use_cctp`; use Circle CCTP rather than this OFT route.
-- A preview or draft is not authorization. `--execute` is testnet-only and signs immediately;
-  `--proposal-out` creates a testnet artifact for external authorization.
+- A preview, draft, or proposal is not authorization. `--execute` is testnet-only and signs
+  immediately; mainnet transactions must be authorized and submitted by external governance.
 - Route state and its append-only logs are part of the custody proof. Restore them as one consistent
   backup and investigate any digest, sequence, nonce, duplicate-GUID, or log-chain failure.
-- `health` is a point-in-time check, not monitoring. Schedule `health`, `message watch`, and
-  `reconcile --fail-on-deficit` externally at a cadence appropriate for the route's finality and
+- `health` is a point-in-time check. Run the supplied monitoring loop and schedule chain-connected
+  `message watch` or observation refresh at a cadence appropriate for the route's finality and
   delivery limits.
 - The container packages the operator binary, artifact lock, and wrapper inputs. The specialized
   `artifact build --write` flow additionally requires the lock-pinned source/dependency archives and

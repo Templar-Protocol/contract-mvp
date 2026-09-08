@@ -59,7 +59,7 @@ fn identity(environment: Environment) -> ChainIdentityV1 {
             stellar_endpoint_code_hash: "0".repeat(64),
             evm_chain_id: 1,
             evm_eid: ETHEREUM_EID,
-            evm_endpoint: "0x1111111111111111111111111111111111111111".into(),
+            evm_endpoint: templar_oft_bridge_cli::environment::ETHEREUM_ENDPOINT.into(),
             evm_endpoint_code_hash: "0".repeat(64),
         },
     }
@@ -536,17 +536,11 @@ fn binding_conflicts_are_refused() {
 }
 
 #[test]
-fn mutation_gate_is_testnet_only_in_v1() {
+fn mutation_gate_allows_planning_for_recognized_environments() {
     mutation_gate(&identity(Environment::StellarTestnetSepolia))
-        .expect("testnet mutations are allowed");
-    let error = mutation_gate(&identity(Environment::StellarMainnetEthereum))
-        .expect_err("mainnet mutation refused in v1");
-    match error {
-        Error::Policy(message) => {
-            assert_eq!(message, "production_mutation_unsupported_v1")
-        }
-        other => panic!("expected policy refusal, got {other:?}"),
-    }
+        .expect("testnet planning is allowed");
+    mutation_gate(&identity(Environment::StellarMainnetEthereum))
+        .expect("mainnet proposal planning is allowed");
 }
 
 #[test]

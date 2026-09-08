@@ -1145,6 +1145,7 @@ fn adopt(args: AdoptArgs) -> Result<CommandData> {
         Error::InvalidInput("adoption requires --evm-rpc-env or --evm-rpc-file".into())
     })?;
     let evm = crate::evm::HttpEvmChain::new(&evm_rpc)?;
+    environment::verify_live_endpoint_code(&desired.identity, &stellar, &evm)?;
     let code = crate::block_on_result(evm.code(evm_address))?;
     crate::deployment::verify_runtime_code_hash(&code, &lock.evm.runtime_bytecode_keccak256)?;
 
@@ -1515,7 +1516,7 @@ fn proposal(args: ProposalArgs) -> Result<CommandData> {
     match args.command {
         ProposalCommand::Create(args) => {
             let state = RouteStore::open(&args.state)?.load_state()?;
-            environment::require_testnet(&state.identity)?;
+            environment::classify(&state.identity)?;
             crate::governance::create_proposal(
                 &args.state,
                 &args.draft,
@@ -1526,7 +1527,7 @@ fn proposal(args: ProposalArgs) -> Result<CommandData> {
         }
         ProposalCommand::Ingest(args) => {
             let state = RouteStore::open(&args.state)?.load_state()?;
-            environment::require_testnet(&state.identity)?;
+            environment::classify(&state.identity)?;
             crate::governance::ingest_proposal(
                 &args.state,
                 &args.proposal,
@@ -1550,7 +1551,7 @@ fn proposal(args: ProposalArgs) -> Result<CommandData> {
         },
         ProposalCommand::SafeVerify(args) => {
             let state = RouteStore::open(&args.state)?.load_state()?;
-            environment::require_testnet(&state.identity)?;
+            environment::classify(&state.identity)?;
             crate::governance::verify_safe_proposal(
                 &args.state,
                 &args.proposal,
@@ -1806,6 +1807,10 @@ fn route_effect(
     effect: ChainEffectArgs,
 ) -> Result<CommandData> {
     let execute = effect.execute;
+    if execute {
+        let state = RouteStore::open(state_path)?.load_state()?;
+        environment::require_testnet(&state.identity)?;
+    }
     let stellar_url = if execute {
         Some(effect.rpc.stellar_url()?.ok_or_else(|| {
             Error::InvalidInput("route execution requires a Stellar RPC provider".into())
@@ -1846,6 +1851,10 @@ fn management_effect(
     effect: ChainEffectArgs,
 ) -> Result<CommandData> {
     let execute = effect.execute;
+    if execute {
+        let state = RouteStore::open(state_path)?.load_state()?;
+        environment::require_testnet(&state.identity)?;
+    }
     let stellar_url = if execute {
         Some(effect.rpc.stellar_url()?.ok_or_else(|| {
             Error::InvalidInput("management execution requires a Stellar RPC provider".into())
@@ -1995,7 +2004,6 @@ fn chain_effect_with_send_policy(
     if !effect.execute && effect.proposal_out.is_none() {
         return data(serde_json::json!({"preview": true, "operation": operation}));
     }
-    environment::require_testnet(&state.identity)?;
     if effect.execute && effect.operation_store_root.is_none() {
         return Err(Error::InvalidInput(
             "execution requires --operation-store-root".into(),
@@ -2010,6 +2018,7 @@ fn chain_effect_with_send_policy(
             effect.rpc.evm_url()?.as_deref(),
         );
     }
+    environment::require_testnet(&state.identity)?;
     match crate::governance::operation_vm(operation) {
         Vm::Stellar => {
             execute_stellar_operation(state_path, operation, effect, allow_additional_obligation)
@@ -2927,7 +2936,7 @@ fn contain(args: ContainArgs) -> Result<CommandData> {
             let mut state = store.load_state()?;
             let direction: Direction = args.direction.into();
             if args.effect.execute || args.effect.proposal_out.is_some() {
-                environment::require_testnet(&state.identity)?;
+                environment::classify(&state.identity)?;
                 if direction == Direction::EvmToStellar {
                     let evm_url = args.effect.rpc.evm_url()?.ok_or_else(|| {
                         Error::InvalidInput("EVM containment requires an EVM RPC provider".into())
@@ -2953,7 +2962,7 @@ fn contain(args: ContainArgs) -> Result<CommandData> {
         ContainCommand::Restore(args) => {
             let state = RouteStore::open(&args.state)?.load_state()?;
             if args.effect.execute || args.effect.proposal_out.is_some() {
-                environment::require_testnet(&state.identity)?;
+                environment::classify(&state.identity)?;
             }
             let snapshot: crate::domain::ContainmentSnapshotV1 = serde_json::from_value(
                 state

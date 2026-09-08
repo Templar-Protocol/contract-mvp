@@ -214,6 +214,9 @@ impl EvmChain for FakeEvm {
     ) -> Result<Option<templar_oft_bridge_cli::evm::EvmReceiptV1>> {
         Ok(self.receipt.clone())
     }
+    async fn latest_block(&self) -> Result<u64> {
+        Ok(101)
+    }
     async fn transaction_by_hash(
         &self,
         _transaction_hash: &str,
@@ -233,11 +236,11 @@ fn route_state() -> RouteStateV1 {
             stellar_passphrase: PASSPHRASE.into(),
             stellar_eid: 40600,
             stellar_endpoint: templar_oft_bridge_cli::environment::STELLAR_TESTNET_ENDPOINT.into(),
-            stellar_endpoint_code_hash: "endpoint-code-hash".into(),
+            stellar_endpoint_code_hash: "1".repeat(64),
             evm_chain_id: 11_155_111,
             evm_eid: 40161,
             evm_endpoint: templar_oft_bridge_cli::environment::SEPOLIA_ENDPOINT.into(),
-            evm_endpoint_code_hash: "endpoint-code-hash".into(),
+            evm_endpoint_code_hash: "2".repeat(64),
         },
         asset: AssetPolicyV1 {
             kind: AssetKind::IssuedSep41,
@@ -524,18 +527,30 @@ fn safe_execution_input(safe: &templar_oft_bridge_cli::domain::SafeTransactionV1
 }
 
 #[test]
-fn evm_ingest_verifies_exact_finalized_transaction_before_journaling() {
+fn mainnet_evm_ingest_verifies_exact_finalized_transaction_before_journaling() {
     let temporary = tempfile::tempdir().unwrap();
     let state_path = temporary.path().join("route");
     std::fs::create_dir(&state_path).unwrap();
-    let state = route_state();
+    let mut state = route_state();
+    state.identity.environment = Environment::StellarMainnetEthereum;
+    state.identity.stellar_passphrase =
+        templar_oft_bridge_cli::environment::STELLAR_PUBLIC_PASSPHRASE.into();
+    state.identity.stellar_eid = templar_oft_bridge_cli::environment::STELLAR_MAINNET_EID;
+    state.identity.stellar_endpoint =
+        templar_oft_bridge_cli::environment::STELLAR_MAINNET_ENDPOINT.into();
+    state.identity.evm_chain_id = 1;
+    state.identity.evm_eid = templar_oft_bridge_cli::environment::ETHEREUM_EID;
+    state.identity.evm_endpoint = templar_oft_bridge_cli::environment::ETHEREUM_ENDPOINT.into();
     templar_oft_bridge_cli::state::write_create_new_json(&state_path.join("route.json"), &state)
         .unwrap();
     std::fs::File::create(state_path.join("operations.jsonl")).unwrap();
     std::fs::File::create(state_path.join("messages.jsonl")).unwrap();
     let store = templar_oft_bridge_cli::state::RouteStore::open(&state_path).unwrap();
 
-    let mut evm = FakeEvm::qualified();
+    let mut evm = FakeEvm {
+        chain_id: 1,
+        ..FakeEvm::qualified()
+    };
     let plan =
         build_executable_plan(&state, &evm_operation(), &FakeStellar::qualified(), &evm).unwrap();
     let binding = plan.evm.as_ref().unwrap();
@@ -552,9 +567,14 @@ fn evm_ingest_verifies_exact_finalized_transaction_before_journaling() {
         block_number: Some(100),
         succeeded: Some(true),
         logs: Vec::new(),
-        raw: serde_json::json!({"status": "0x1", "blockNumber": "0x64"}),
+        raw: serde_json::json!({
+            "status": "0x1",
+            "blockNumber": "0x64",
+            "blockHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }),
     });
-    let proposal = build_proposal(Environment::StellarTestnetSepolia, plan).unwrap();
+    let mut proposal = build_proposal(Environment::StellarMainnetEthereum, plan).unwrap();
+    proposal.plan.expires_at_unix = 0;
     let operation_id = templar_oft_bridge_cli::canonical_sha256(&proposal.plan.operation).unwrap();
     store
         .write_proposal(
@@ -574,6 +594,10 @@ fn evm_ingest_verifies_exact_finalized_transaction_before_journaling() {
         false,
     )
     .unwrap();
+    assert_eq!(
+        preview.result["evidence"]["ingested_after_review_deadline"],
+        true
+    );
     assert_eq!(preview.result["written"], false);
     ingest_proposal_with_adapters(
         &state_path,
