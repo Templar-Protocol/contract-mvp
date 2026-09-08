@@ -6,7 +6,8 @@
 //! RPC layer must guarantee:
 //!
 //! 1. `oracle.updateLazer` plans an adapter write carrying the payload as
-//!    base64 `payload` (never classic-Pyth hex `data`).
+//!    base64 `payload` (never classic-Pyth hex `data`). The feed set reaching
+//!    the source is pinned one layer down, where the fake records its calls.
 //! 2. A proxy `oracle.updatePrices` for a Lazer-backed feed routes through the
 //!    Lazer source (the canned payload shows up in the planned adapter write).
 //! 3. A Lazer cache-miss surfaces as a structured gateway error through the RPC
@@ -87,7 +88,7 @@ async fn oracle_update_lazer_plan_carries_payload_base64_not_data() -> Result<()
         idempotency_key: None,
         body: oracle_updates::UpdateLazer {
             oracle_id: oracle_id.clone(),
-            feed_id: 7,
+            feed_ids: vec![7],
         },
     };
 
@@ -300,7 +301,7 @@ async fn oracle_update_lazer_cache_miss_returns_structured_gateway_error() -> Re
             idempotency_key: None,
             body: oracle_updates::UpdateLazer {
                 oracle_id: "pyth-lazer.near".parse()?,
-                feed_id: 7,
+                feed_ids: vec![7],
             },
         })
         .await
@@ -340,7 +341,7 @@ async fn oracle_update_lazer_stale_payload_is_a_hard_error() -> Result<()> {
             idempotency_key: None,
             body: oracle_updates::UpdateLazer {
                 oracle_id: "pyth-lazer.near".parse()?,
-                feed_id: 7,
+                feed_ids: vec![7],
             },
         })
         .await

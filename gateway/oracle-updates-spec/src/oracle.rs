@@ -23,12 +23,14 @@ pub struct UpdateRedStone {
     pub feed_ids: Vec<redstone::FeedId>,
 }
 
-/// Submit a Pyth Lazer oracle update for a single feed.
+/// Submit a Pyth Lazer oracle update for one or more feeds.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[method(write = "oracle.updateLazer")]
 pub struct UpdateLazer {
     pub oracle_id: near_account_id::AccountId,
-    pub feed_id: u32,
+    /// Fetched as one payload covering every feed and written in a single
+    /// `update_price_feeds` call. Empty is a no-op.
+    pub feed_ids: Vec<u32>,
 }
 
 /// Submit all updates needed for prices.

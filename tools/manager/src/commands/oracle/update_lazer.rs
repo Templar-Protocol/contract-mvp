@@ -10,9 +10,10 @@ pub struct UpdateLazer {
     /// Pyth Lazer adapter account to update.
     #[arg(long, value_name = "ACCOUNT_ID")]
     oracle_id: AccountId,
-    /// Pyth Lazer feed id to fetch and update.
-    #[arg(long, value_name = "FEED_ID")]
-    feed_id: u32,
+    /// Pyth Lazer feed ids to fetch and update; repeat the flag per feed.
+    /// All feeds are covered by a single payload and written in one call.
+    #[arg(long = "feed-id", value_name = "FEED_ID", required = true)]
+    feed_ids: Vec<u32>,
     #[command(flatten)]
     pub(crate) sources: LazerSourceArgs,
     #[command(flatten)]
@@ -23,7 +24,7 @@ impl UpdateLazer {
     pub fn into_spec(self) -> spec::UpdateLazer {
         spec::UpdateLazer {
             oracle_id: self.oracle_id,
-            feed_id: self.feed_id,
+            feed_ids: self.feed_ids,
         }
     }
 }

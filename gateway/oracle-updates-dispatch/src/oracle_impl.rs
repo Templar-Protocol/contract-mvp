@@ -93,15 +93,20 @@ where
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
-        let payload = OraclePayloadSource::fetch_payload(ctx.lazer_source(), &[body.feed_id])
-            .await
-            .map_err(|error| GatewayError::ExternalService(error.to_string()))?;
-        plan_pyth_lazer_update(
-            ctx.near_client(),
+        if body.feed_ids.is_empty() {
+            tracing::warn!(
+                oracle_id = %body.oracle_id,
+                "oracle.updateLazer requested with no feed ids; nothing to update"
+            );
+            return Ok(OperationPlan { steps: Vec::new() });
+        }
+        plan_lazer_feed_update(
+            &ctx,
             request.signer_account_id,
             body.oracle_id,
-            payload,
+            &body.feed_ids,
         )
+        .await
         .map(OperationPlan::from)
     }
 }
@@ -167,6 +172,27 @@ where
         .await
         .map_err(|error| GatewayError::HttpRequest(error.to_string()))?;
     plan_pyth_update(ctx.near_client(), signer_account_id, oracle_id, vaa)
+}
+
+/// Fetch the payload covering `feed_ids` from the Lazer stream and plan the adapter write.
+async fn plan_lazer_feed_update<C>(
+    ctx: &C,
+    signer_account_id: ManagedAccountId,
+    oracle_id: AccountId,
+    feed_ids: &[u32],
+) -> GatewayResult<PlannedTransaction>
+where
+    C: HasNearClient + ProvidesLazerSource,
+{
+    tracing::debug!(
+        %oracle_id,
+        feed_count = feed_ids.len(),
+        "fetching Pyth Lazer payload for gateway oracle update"
+    );
+    let payload = OraclePayloadSource::fetch_payload(ctx.lazer_source(), feed_ids)
+        .await
+        .map_err(|error| GatewayError::ExternalService(error.to_string()))?;
+    plan_pyth_lazer_update(ctx.near_client(), signer_account_id, oracle_id, payload)
 }
 
 async fn plan_grouped_updates<C>(
@@ -237,20 +263,9 @@ where
 
     for (oracle_id, feed_ids) in lazer_updates {
         let feed_ids: Vec<u32> = feed_ids.into_iter().collect();
-        tracing::debug!(
-            %oracle_id,
-            feed_count = feed_ids.len(),
-            "fetching Pyth Lazer payload for gateway oracle update"
+        steps.push(
+            plan_lazer_feed_update(ctx, signer_account_id.clone(), oracle_id, &feed_ids).await?,
         );
-        let payload = OraclePayloadSource::fetch_payload(ctx.lazer_source(), &feed_ids)
-            .await
-            .map_err(|error| GatewayError::ExternalService(error.to_string()))?;
-        steps.push(plan_pyth_lazer_update(
-            ctx.near_client(),
-            signer_account_id.clone(),
-            oracle_id,
-            payload,
-        )?);
     }
 
     Ok(OperationPlan { steps })
@@ -281,6 +296,8 @@ mod tests {
     use base64::Engine as _;
     use near_api::types::transaction::actions::Action;
     use near_api::NetworkConfig;
+    use rstest::rstest;
+    use std::sync::{Arc, Mutex};
     use templar_gateway_core::NearClient;
     use templar_gateway_types::common::WriteRequest;
     use thiserror::Error;
@@ -294,6 +311,23 @@ mod tests {
     #[derive(Clone)]
     struct FakeLazerSource {
         outcome: Result<Vec<u8>, FakeError>,
+        calls: Arc<Mutex<Vec<Vec<u32>>>>,
+    }
+
+    impl FakeLazerSource {
+        fn new(outcome: Result<Vec<u8>, FakeError>) -> Self {
+            Self {
+                outcome,
+                calls: Arc::default(),
+            }
+        }
+
+        fn calls(&self) -> Vec<Vec<u32>> {
+            self.calls
+                .lock()
+                .expect("calls mutex must not be poisoned")
+                .clone()
+        }
     }
 
     #[async_trait]
@@ -301,7 +335,11 @@ mod tests {
         type PriceId = u32;
         type Error = FakeError;
 
-        async fn fetch_payload(&self, _price_ids: &[u32]) -> Result<Vec<u8>, FakeError> {
+        async fn fetch_payload(&self, price_ids: &[u32]) -> Result<Vec<u8>, FakeError> {
+            self.calls
+                .lock()
+                .expect("calls mutex must not be poisoned")
+                .push(price_ids.to_vec());
             self.outcome.clone()
         }
     }
@@ -415,9 +453,7 @@ mod tests {
             redstone_source: FakeRedStoneSource {
                 payload: Vec::new(),
             },
-            lazer_source: FakeLazerSource {
-                outcome: Ok(Vec::new()),
-            },
+            lazer_source: FakeLazerSource::new(Ok(Vec::new())),
         }
     }
 
@@ -430,22 +466,16 @@ mod tests {
 
     fn lazer_ctx(outcome: Result<Vec<u8>, FakeError>) -> TestCtx {
         TestCtx {
-            lazer_source: FakeLazerSource { outcome },
+            lazer_source: FakeLazerSource::new(outcome),
             ..inert_ctx()
         }
     }
 
-    fn update_pyth_request(
-        oracle_id: AccountId,
-        price_ids: Vec<PriceIdentifier>,
-    ) -> WriteRequest<UpdatePyth> {
+    fn write_request<B>(body: B) -> WriteRequest<B> {
         WriteRequest {
             signer_account_id: signer_id(),
             idempotency_key: None,
-            body: UpdatePyth {
-                oracle_id,
-                price_ids,
-            },
+            body,
         }
     }
 
@@ -453,7 +483,10 @@ mod tests {
     async fn update_pyth_writes_the_vaa_it_fetched() {
         let vaa = vec![0x01, 0x02, 0x03, 0x04];
         let oracle_id: AccountId = "pyth.near".parse().expect("valid account id");
-        let request = update_pyth_request(oracle_id.clone(), vec![PriceIdentifier([0xAA; 32])]);
+        let request = write_request(UpdatePyth {
+            oracle_id: oracle_id.clone(),
+            price_ids: vec![PriceIdentifier([0xAA; 32])],
+        });
 
         let plan =
             <Dispatch as PlanWrite<UpdatePyth, TestCtx>>::plan(request, pyth_ctx(Ok(vaa.clone())))
@@ -477,7 +510,10 @@ mod tests {
 
     #[tokio::test]
     async fn update_pyth_with_no_price_ids_plans_nothing() {
-        let request = update_pyth_request("pyth.near".parse().unwrap(), Vec::new());
+        let request = write_request(UpdatePyth {
+            oracle_id: "pyth.near".parse().unwrap(),
+            price_ids: Vec::new(),
+        });
 
         let plan =
             <Dispatch as PlanWrite<UpdatePyth, TestCtx>>::plan(request, pyth_ctx(Err(FakeError)))
@@ -489,10 +525,10 @@ mod tests {
 
     #[tokio::test]
     async fn update_pyth_propagates_source_error() {
-        let request = update_pyth_request(
-            "pyth.near".parse().unwrap(),
-            vec![PriceIdentifier([0xAA; 32])],
-        );
+        let request = write_request(UpdatePyth {
+            oracle_id: "pyth.near".parse().unwrap(),
+            price_ids: vec![PriceIdentifier([0xAA; 32])],
+        });
 
         let error =
             <Dispatch as PlanWrite<UpdatePyth, TestCtx>>::plan(request, pyth_ctx(Err(FakeError)))
@@ -505,28 +541,34 @@ mod tests {
         );
     }
 
+    #[rstest]
+    #[case::single_feed(vec![7])]
+    #[case::multiple_feeds(vec![7, 8])]
     #[tokio::test]
-    async fn update_lazer_plans_one_adapter_write() {
+    async fn update_lazer_plans_one_adapter_write(#[case] feed_ids: Vec<u32>) {
         let payload = vec![0xAA, 0xBB, 0xCC, 0xDD];
         let ctx = lazer_ctx(Ok(payload.clone()));
+        // Shares the recorder with the context `plan` consumes.
+        let source = ctx.lazer_source.clone();
         let oracle_id: AccountId = "pyth-lazer.near".parse().expect("valid account id");
-        let request = WriteRequest {
-            signer_account_id: signer_id(),
-            idempotency_key: None,
-            body: UpdateLazer {
-                oracle_id: oracle_id.clone(),
-                feed_id: 7,
-            },
-        };
+        let request = write_request(UpdateLazer {
+            oracle_id: oracle_id.clone(),
+            feed_ids: feed_ids.clone(),
+        });
 
         let plan = <Dispatch as PlanWrite<UpdateLazer, TestCtx>>::plan(request, ctx)
             .await
             .expect("UpdateLazer plan must succeed with a fresh payload");
 
         assert_eq!(
+            source.calls(),
+            vec![feed_ids],
+            "every requested feed must reach the source in a single fetch"
+        );
+        assert_eq!(
             plan.steps.len(),
             1,
-            "UpdateLazer must plan exactly one step"
+            "UpdateLazer must plan exactly one step for the whole feed set"
         );
         let step = &plan.steps[0];
         assert_eq!(step.receiver_id, oracle_id);
@@ -558,16 +600,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn update_lazer_with_no_feed_ids_plans_nothing() {
+        let ctx = lazer_ctx(Err(FakeError));
+        let request = write_request(UpdateLazer {
+            oracle_id: "pyth-lazer.near".parse().unwrap(),
+            feed_ids: Vec::new(),
+        });
+
+        let plan = <Dispatch as PlanWrite<UpdateLazer, TestCtx>>::plan(request, ctx)
+            .await
+            .expect("an empty UpdateLazer must not reach the source");
+
+        assert!(plan.steps.is_empty(), "expected a step-less plan");
+    }
+
+    #[tokio::test]
     async fn update_lazer_propagates_source_error() {
         let ctx = lazer_ctx(Err(FakeError));
-        let request = WriteRequest {
-            signer_account_id: signer_id(),
-            idempotency_key: None,
-            body: UpdateLazer {
-                oracle_id: "pyth-lazer.near".parse().unwrap(),
-                feed_id: 7,
-            },
-        };
+        let request = write_request(UpdateLazer {
+            oracle_id: "pyth-lazer.near".parse().unwrap(),
+            feed_ids: vec![7],
+        });
 
         let error = <Dispatch as PlanWrite<UpdateLazer, TestCtx>>::plan(request, ctx)
             .await
@@ -587,9 +640,7 @@ mod tests {
             pyth_source: FakePythSource {
                 outcome: Ok(pyth_payload.clone()),
             },
-            lazer_source: FakeLazerSource {
-                outcome: Ok(lazer_payload.clone()),
-            },
+            lazer_source: FakeLazerSource::new(Ok(lazer_payload.clone())),
             ..inert_ctx()
         };
         let pyth_oracle: AccountId = "pyth.near".parse().unwrap();

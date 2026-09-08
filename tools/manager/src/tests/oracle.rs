@@ -88,27 +88,6 @@ fn update_red_stone_collects_repeated_feed_ids() {
     assert_eq!(spec.feed_ids, vec!["BTC".into(), "ETH".into()]);
 }
 
-#[test]
-fn update_red_stone_requires_a_feed_id() {
-    let error = Cli::try_parse_from(
-        [
-            "tmplrmgr",
-            "oracle",
-            "update-red-stone",
-            "--oracle-id",
-            "redstone.testnet",
-        ]
-        .into_iter()
-        .chain(CREDS),
-    )
-    .expect_err("oracle update-red-stone should require a feed id");
-
-    assert_eq!(
-        error.kind(),
-        clap::error::ErrorKind::MissingRequiredArgument
-    );
-}
-
 /// A repeated `--price-id` would otherwise resolve the same dependencies twice.
 #[test]
 fn update_prices_deduplicates_repeated_price_ids() {
@@ -193,24 +172,29 @@ fn update_pyth_deduplicates_repeated_price_ids() {
     );
 }
 
-#[test]
-fn update_pyth_requires_a_price_id() {
+/// Empty is a no-op at the gateway, so each update rejects a missing id at parse time.
+#[rstest]
+#[case::update_pyth(&["update-pyth", "--oracle-id", "pyth.testnet"], "--price-id")]
+#[case::update_red_stone(&["update-red-stone", "--oracle-id", "redstone.testnet"], "--feed-id")]
+#[case::update_lazer(&["update-lazer", "--oracle-id", "lazer.testnet"], "--feed-id")]
+#[case::update_prices(&["update-prices", "--oracle-id", "proxy.testnet"], "--price-id")]
+fn oracle_updates_require_an_id(#[case] subcommand: &[&str], #[case] expected_flag: &str) {
     let error = Cli::try_parse_from(
-        [
-            "tmplrmgr",
-            "oracle",
-            "update-pyth",
-            "--oracle-id",
-            "pyth.testnet",
-        ]
-        .into_iter()
-        .chain(CREDS),
+        ["tmplrmgr", "oracle"]
+            .into_iter()
+            .chain(subcommand.iter().copied())
+            .chain(CREDS),
     )
-    .expect_err("oracle update-pyth should require a price id");
+    .expect_err("an oracle update with no ids should fail to parse");
 
     assert_eq!(
         error.kind(),
         clap::error::ErrorKind::MissingRequiredArgument
+    );
+    assert!(
+        error.to_string().contains(expected_flag),
+        "the error should name {expected_flag}, so a flag losing `required` cannot pass \
+         by way of some other missing argument: {error}"
     );
 }
 
@@ -270,7 +254,7 @@ fn lazer_args(pyth_lazer_api_key: Option<RedactedString>) -> LazerSourceArgs {
 }
 
 #[test]
-fn update_lazer_maps_its_args_to_the_spec() {
+fn update_lazer_collects_repeated_feed_ids() {
     let cli = Cli::try_parse_from(
         [
             "tmplrmgr",
@@ -280,6 +264,8 @@ fn update_lazer_maps_its_args_to_the_spec() {
             "lazer.testnet",
             "--feed-id",
             "7",
+            "--feed-id",
+            "8",
             "--pyth-lazer-api-key",
             "secret-token",
         ]
@@ -297,5 +283,5 @@ fn update_lazer_maps_its_args_to_the_spec() {
 
     let spec = cmd.into_spec();
     assert_eq!(spec.oracle_id.as_str(), "lazer.testnet");
-    assert_eq!(spec.feed_id, 7);
+    assert_eq!(spec.feed_ids, vec![7, 8]);
 }

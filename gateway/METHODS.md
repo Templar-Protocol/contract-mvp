@@ -129,7 +129,7 @@
 | `oracle.getPrices` | read | `GetPrices` → `ResolvePricesResult` | Read multiple on-chain oracle prices. |
 | `oracle.resolvePrice` | read | `ResolvePrice` → `ResolvePriceResult` | Resolve a single price from supplied inputs. |
 | `oracle.resolvePrices` | read | `ResolvePrices` → `ResolvePricesResult` | Resolve multiple prices from supplied inputs. |
-| `oracle.updateLazer` | write | `UpdateLazer` → `WriteOperationResult` | Submit a Pyth Lazer oracle update for a single feed. |
+| `oracle.updateLazer` | write | `UpdateLazer` → `WriteOperationResult` | Submit a Pyth Lazer oracle update for one or more feeds. |
 | `oracle.updatePrices` | write | `UpdatePrices` → `WriteOperationResult` | Submit all updates needed for prices. |
 | `oracle.updatePyth` | write | `UpdatePyth` → `WriteOperationResult` | Submit a Pyth oracle update for one or more feeds. |
 | `oracle.updateRedStone` | write | `UpdateRedStone` → `WriteOperationResult` | Submit a RedStone oracle update for one or more feeds. |
