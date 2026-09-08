@@ -39,7 +39,7 @@ pub enum AdapterError {
     MissingConfig = 3,
     /// Arithmetic overflow when computing total assets.
     ArithmeticOverflow = 4,
-    /// No supply position found for the given reserve index.
+    /// Reserved for backward compatibility with the deployed error ABI.
     MissingPosition = 5,
     /// Arithmetic underflow when computing actual withdrawal.
     ArithmeticUnderflow = 6,
@@ -230,10 +230,8 @@ impl BlendAdapterContract {
         }
         let positions = client.get_positions(&env.current_contract_address());
         let index = reserve.config.index;
-        let b_tokens = positions
-            .supply
-            .get(index)
-            .ok_or(AdapterError::MissingPosition)?;
+        // Blend omits zero-valued positions from its sparse supply map.
+        let b_tokens = positions.supply.get(index).unwrap_or(0);
         b_tokens
             .checked_mul(reserve.data.b_rate)
             .and_then(|value| value.checked_div(SCALAR_12))

@@ -241,6 +241,20 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
         .unwrap();
     });
 
+    let refreshed_empty_external = env
+        .as_contract(&vault, || {
+            execute_command(
+                &env,
+                &VaultCommand::RefreshMarkets {
+                    caller: address_wire(&allocator),
+                    markets: vec![0u32],
+                },
+            )
+        })
+        .unwrap();
+    assert_eq!(refreshed_empty_external, 0);
+    assert_eq!(vault_snapshot(&env, &vault), (0, 0, 0));
+
     let deposit_amount = 10_000_000_000;
     let supply_amount = 6_000_000_000;
     let withdraw_amount = 2_500_000_000;

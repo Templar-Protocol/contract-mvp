@@ -13,9 +13,7 @@ use soroban_sdk::{
     token::StellarAssetClient,
     Address, BytesN, Env, String,
 };
-use templar_soroban_blend_adapter::{
-    AdapterError, BlendAdapterContract, BlendAdapterContractClient,
-};
+use templar_soroban_blend_adapter::{BlendAdapterContract, BlendAdapterContractClient};
 
 #[contract]
 struct DummyContract;
@@ -166,7 +164,7 @@ fn total_assets_returns_correct_value_after_supply() {
 }
 
 #[test]
-fn total_assets_missing_position_returns_error() {
+fn total_assets_without_position_returns_zero() {
     let env = Env::default();
     env.mock_all_auths();
     let (pool, _pool_client, asset, _asset_admin, _deployer) = setup_blend_pool(&env);
@@ -174,14 +172,12 @@ fn total_assets_missing_position_returns_error() {
     let vault = register_dummy_contract(&env);
     let (adapter, _admin, _client) = setup_adapter(&env, &pool, &vault);
 
-    // Query without supplying — call via env.as_contract since the client
-    // will panic on error; we want to verify the error type.
     env.as_contract(&adapter, || {
         let result = BlendAdapterContract::total_assets(env.clone(), asset.clone());
         assert_eq!(
             result,
-            Err(AdapterError::MissingPosition),
-            "should return MissingPosition when adapter has no pool position"
+            Ok(0),
+            "an adapter without a pool position should report zero assets"
         );
     });
 }
@@ -277,4 +273,8 @@ fn full_supply_withdraw_cycle() {
     // 4. Verify vault received assets
     let token_client = soroban_sdk::token::Client::new(&env, &asset);
     assert_eq!(token_client.balance(&vault), amount);
+
+    // Blend removes the supply-map entry after a complete exit. Absence means
+    // zero exposure, so the adapter must remain readable after withdrawing all.
+    assert_eq!(client.total_assets(&asset), 0);
 }

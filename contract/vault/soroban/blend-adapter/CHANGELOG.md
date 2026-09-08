@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Report zero assets when the adapter has no Blend supply position, keeping vault refreshes live
+  before first allocation and after a complete exit.
+
 ## [1.0.1](https://github.com/Templar-Protocol/contracts/compare/templar-soroban-blend-adapter-v1.0.0...templar-soroban-blend-adapter-v1.0.1) - 2026-08-03
 
 ### Added
