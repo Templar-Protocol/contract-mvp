@@ -5,6 +5,9 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+#[cfg(unix)]
+use std::os::fd::AsRawFd as _;
+
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -52,33 +55,27 @@ fn valid_message_transition(
 
 #[derive(Debug)]
 pub struct RouteLock {
-    path: PathBuf,
     _file: File,
 }
 
 impl RouteLock {
     pub fn acquire(state_dir: &Path) -> Result<Self> {
         let path = state_dir.join(LOCK_FILE);
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .map_err(|error| {
-                if error.kind() == std::io::ErrorKind::AlreadyExists {
-                    Error::Conflict(format!("route is busy: {}", state_dir.display()))
-                } else {
-                    Error::Io(error)
-                }
-            })?;
-        Ok(Self { path, _file: file })
+        let file = open_advisory_lock(&path)?;
+        try_lock_exclusive(&file).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                Error::Conflict(format!("route is busy: {}", state_dir.display()))
+            } else {
+                Error::Io(error)
+            }
+        })?;
+        Ok(Self { _file: file })
     }
 }
 
-impl Drop for RouteLock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
-}
+// The persistent file is only an inode for the kernel advisory lock. Closing
+// `_file` releases the lock even if the process is killed, so there is no
+// stale marker to delete or race another process to reclaim.
 /// Non-authoritative Phase-A binding: the `{environment, vm, sender}`
 /// authority-domain key plus the canonical route state path, each with a
 /// digest, captured from a plain state-file read before any lock is taken.
@@ -103,6 +100,7 @@ impl PhaseABinding {
             vm: Vm,
             sender: &'a str,
         }
+        let sender = canonical_authority_sender(vm, sender)?;
         let route_canonical_path = fs::canonicalize(route_path).map_err(|_| {
             Error::InvalidInput(format!(
                 "phase-a binding requires an existing state directory: {}",
@@ -112,14 +110,14 @@ impl PhaseABinding {
         let domain_sha256 = canonical_sha256(&DomainBindingKey {
             environment,
             vm,
-            sender,
+            sender: &sender,
         })?;
         let route_path_sha256 = route_path_sha256_digest(&route_canonical_path);
         Ok(Self {
             route_canonical_path,
             environment,
             vm,
-            sender: sender.to_owned(),
+            sender,
             domain_sha256,
             route_path_sha256,
         })
@@ -165,13 +163,13 @@ struct AuthorityReservationV1 {
     signed_payload_sha256: String,
 }
 
-/// Sender-domain fence: a create-new lock file under the operation-store
+/// Sender-domain fence: an advisory lock file under the operation-store
 /// root keyed by the `{environment, vm, sender}` digest. Acquired before the
 /// route lock; every route in the same authority domain serializes here,
-/// and a busy result is typed — stale locks are never deleted.
+/// and a busy result is typed. The file remains in place, while the kernel
+/// lock is released automatically on process exit or crash.
 #[derive(Debug)]
 struct AuthorityDomainLock {
-    path: PathBuf,
     _file: File,
 }
 
@@ -195,29 +193,24 @@ impl AuthorityDomainLock {
         }
         let directory = operations_root.join(AUTHORITY_LOCK_DIR);
         fs::create_dir_all(&directory)?;
+        let directory_metadata = fs::symlink_metadata(&directory)?;
+        if directory_metadata.file_type().is_symlink() || !directory_metadata.is_dir() {
+            return Err(Error::InvalidInput(format!(
+                "authority lock directory must be a real directory: {}",
+                directory.display()
+            )));
+        }
         set_directory_mode(&directory)?;
         let path = directory.join(format!("{domain_sha256}.lock"));
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            options.mode(0o600);
-        }
-        let file = options.open(&path).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::AlreadyExists {
+        let file = open_advisory_lock(&path)?;
+        try_lock_exclusive(&file).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::WouldBlock {
                 Error::Conflict(format!("authority domain is busy: {}", path.display()))
             } else {
                 Error::Io(error)
             }
         })?;
-        Ok(Self { path, _file: file })
-    }
-}
-
-impl Drop for AuthorityDomainLock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        Ok(Self { _file: file })
     }
 }
 
@@ -515,6 +508,18 @@ impl RouteStore {
         Ok(())
     }
 
+    /// Returns whether authenticated packet evidence for a source transaction
+    /// is already present in the append-only message ledger. A send operation
+    /// must not become terminal or release its authority reservation until
+    /// this is true.
+    pub fn has_message_for_source_transaction(&self, transaction_hash: &str) -> Result<bool> {
+        Ok(self.load_messages()?.iter().any(|record| {
+            record
+                .source_transaction
+                .eq_ignore_ascii_case(transaction_hash)
+        }))
+    }
+
     /// Shared acceptance checks for a brand-new packet record. Identity
     /// uniqueness is checked separately against the target ledger context.
     fn validate_new_message(&self, record: &MessageRecordV1) -> Result<()> {
@@ -630,8 +635,6 @@ impl RouteStore {
         )?;
         Ok(())
     }
-
-
 
     /// Appends a status event to an existing packet. The ledger is
     /// append-only: history is never rewritten, the event lands as a new
@@ -1162,6 +1165,84 @@ fn remove_orphan_temporary(temporary: &Path) -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(Error::Io(error)),
     }
+}
+
+fn canonical_authority_sender(vm: Vm, sender: &str) -> Result<String> {
+    match vm {
+        Vm::Evm => crate::evm::parse_address(sender).map(crate::evm::canonical_address),
+        Vm::Stellar => Ok(sender.to_owned()),
+    }
+}
+
+fn open_advisory_lock(path: &Path) -> Result<File> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            return Err(Error::InvalidInput(format!(
+                "lock path must be a real file: {}",
+                path.display()
+            )));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(Error::Io(error)),
+    }
+
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let file = options.open(path)?;
+    let path_metadata = fs::symlink_metadata(path)?;
+    if path_metadata.file_type().is_symlink() || !path_metadata.is_file() {
+        return Err(Error::InvalidInput(format!(
+            "lock path must be a real file: {}",
+            path.display()
+        )));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let file_metadata = file.metadata()?;
+        if path_metadata.dev() != file_metadata.dev()
+            || path_metadata.ino() != file_metadata.ino()
+            || file_metadata.nlink() != 1
+        {
+            return Err(Error::InvalidInput(format!(
+                "lock path must not be replaced or hard-linked: {}",
+                path.display()
+            )));
+        }
+        use std::os::unix::fs::PermissionsExt as _;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn try_lock_exclusive(file: &File) -> std::io::Result<()> {
+    const LOCK_EXCLUSIVE: std::os::raw::c_int = 2;
+    const LOCK_NONBLOCKING: std::os::raw::c_int = 4;
+    unsafe extern "C" {
+        fn flock(fd: std::os::raw::c_int, operation: std::os::raw::c_int) -> std::os::raw::c_int;
+    }
+    // SAFETY: `file` owns a valid descriptor for the duration of this call;
+    // `flock` neither retains the pointer nor accesses Rust memory.
+    if unsafe { flock(file.as_raw_fd(), LOCK_EXCLUSIVE | LOCK_NONBLOCKING) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(unix))]
+fn try_lock_exclusive(_file: &File) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "advisory operation-store locks require a Unix platform",
+    ))
 }
 
 fn record_hash<T: Serialize>(record: &LogRecordV1<T>) -> Result<String> {

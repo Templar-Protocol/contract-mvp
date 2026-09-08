@@ -9,6 +9,486 @@ use serde::{Deserialize, Serialize};
 use crate::domain::{DesiredRouteV1, Direction, OperationV1, RouteStateV1, Vm};
 use crate::error::{Error, Result};
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourceSendEvidenceV1 {
+    pub encoded_packet: Vec<u8>,
+    pub send_library: String,
+    pub amount_sent_ld: u128,
+    pub amount_received_ld: u128,
+    pub event_coordinate: String,
+}
+
+fn stellar_event_body(
+    event: &stellar_baselib::xdr::ContractEvent,
+) -> &stellar_baselib::xdr::ContractEventV0 {
+    match &event.body {
+        stellar_baselib::xdr::ContractEventBody::V0(body) => body,
+    }
+}
+
+fn stellar_event_name(event: &stellar_baselib::xdr::ContractEvent) -> Option<&[u8]> {
+    let body = stellar_event_body(event);
+    match body.topics.first() {
+        Some(stellar_baselib::xdr::ScVal::Symbol(symbol)) => Some(symbol.0.as_slice()),
+        _ => None,
+    }
+}
+
+fn stellar_map_value<'a>(
+    value: &'a stellar_baselib::xdr::ScVal,
+    key: &str,
+) -> Result<&'a stellar_baselib::xdr::ScVal> {
+    let stellar_baselib::xdr::ScVal::Map(Some(map)) = value else {
+        return Err(Error::Custody(
+            "LayerZero event data is not a Soroban map".into(),
+        ));
+    };
+    map.0
+        .iter()
+        .find_map(|entry| match &entry.key {
+            stellar_baselib::xdr::ScVal::Symbol(symbol)
+                if symbol.0.as_slice() == key.as_bytes() =>
+            {
+                Some(&entry.val)
+            }
+            _ => None,
+        })
+        .ok_or_else(|| Error::Custody(format!("LayerZero event is missing {key}")))
+}
+
+fn stellar_address_string(value: &stellar_baselib::xdr::ScVal) -> Result<String> {
+    use stellar_baselib::address::{Address, AddressTrait as _};
+    let stellar_baselib::xdr::ScVal::Address(address) = value else {
+        return Err(Error::Custody(
+            "LayerZero event address is malformed".into(),
+        ));
+    };
+    Address::from_sc_address(address)
+        .map(|address| address.to_string())
+        .map_err(|error| Error::Custody(format!("LayerZero event address is invalid: {error}")))
+}
+
+fn stellar_i128(value: &stellar_baselib::xdr::ScVal, field: &str) -> Result<u128> {
+    let stellar_baselib::xdr::ScVal::I128(parts) = value else {
+        return Err(Error::Custody(format!("OFTSent {field} is not i128")));
+    };
+    let value = (i128::from(parts.hi) << 64) | i128::from(parts.lo);
+    u128::try_from(value).map_err(|_| Error::Custody(format!("OFTSent {field} is negative")))
+}
+
+/// Extracts the official Soroban `PacketSent` and `OFTSent` events from the
+/// finalized transaction. Contract IDs, GUID, destination EID, and event
+/// amounts are authenticated by the transaction metadata and cross-checked.
+pub fn decode_stellar_source_send(
+    events: &[stellar_baselib::xdr::ContractEvent],
+    endpoint: &str,
+    oft: &str,
+    destination_eid: u32,
+) -> Result<SourceSendEvidenceV1> {
+    let endpoint_id = crate::codec::strkey_to_bytes32(endpoint)?;
+    let oft_id = crate::codec::strkey_to_bytes32(oft)?;
+    let mut packet: Option<(usize, Vec<u8>, String)> = None;
+    let mut sent: Option<(usize, [u8; 32], u128, u128)> = None;
+    for (index, event) in events.iter().enumerate() {
+        let Some(contract_id) = event.contract_id.as_ref() else {
+            continue;
+        };
+        let body = stellar_event_body(event);
+        if contract_id.0 .0 == endpoint_id && stellar_event_name(event) == Some(b"packet_sent") {
+            if packet.is_some() {
+                return Err(Error::Custody(
+                    "source transaction emitted multiple PacketSent events".into(),
+                ));
+            }
+            let stellar_baselib::xdr::ScVal::Bytes(encoded) =
+                stellar_map_value(&body.data, "encoded_packet")?
+            else {
+                return Err(Error::Custody(
+                    "PacketSent encoded_packet is not bytes".into(),
+                ));
+            };
+            let library = stellar_address_string(stellar_map_value(&body.data, "send_library")?)?;
+            packet = Some((index, encoded.0.as_slice().to_vec(), library));
+        } else if contract_id.0 .0 == oft_id && stellar_event_name(event) == Some(b"oft_sent") {
+            if sent.is_some() {
+                return Err(Error::Custody(
+                    "source transaction emitted multiple OFTSent events".into(),
+                ));
+            }
+            let topics = &body.topics;
+            let (
+                Some(stellar_baselib::xdr::ScVal::Bytes(guid)),
+                Some(stellar_baselib::xdr::ScVal::U32(dst)),
+            ) = (topics.get(1), topics.get(2))
+            else {
+                return Err(Error::Custody("OFTSent topics are malformed".into()));
+            };
+            let guid: [u8; 32] = guid
+                .0
+                .as_slice()
+                .try_into()
+                .map_err(|_| Error::Custody("OFTSent GUID is not 32 bytes".into()))?;
+            if *dst != destination_eid {
+                return Err(Error::Custody(
+                    "OFTSent destination EID differs from the intent".into(),
+                ));
+            }
+            sent = Some((
+                index,
+                guid,
+                stellar_i128(
+                    stellar_map_value(&body.data, "amount_sent_ld")?,
+                    "amount_sent_ld",
+                )?,
+                stellar_i128(
+                    stellar_map_value(&body.data, "amount_received_ld")?,
+                    "amount_received_ld",
+                )?,
+            ));
+        }
+    }
+    let (packet_index, encoded_packet, send_library) = packet.ok_or_else(|| {
+        Error::Custody("finalized source transaction has no authenticated PacketSent event".into())
+    })?;
+    let (sent_index, guid, amount_sent_ld, amount_received_ld) = sent.ok_or_else(|| {
+        Error::Custody("finalized source transaction has no authenticated OFTSent event".into())
+    })?;
+    if encoded_packet.len() < 113 || encoded_packet[81..113] != guid {
+        return Err(Error::Custody(
+            "PacketSent packet GUID differs from OFTSent".into(),
+        ));
+    }
+    Ok(SourceSendEvidenceV1 {
+        encoded_packet,
+        send_library,
+        amount_sent_ld,
+        amount_received_ld,
+        event_coordinate: format!("packet:{packet_index},oft:{sent_index}"),
+    })
+}
+
+fn evm_log_parts(log: &serde_json::Value) -> Result<(&str, Vec<&str>, &str)> {
+    let address = log
+        .get("address")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| Error::Custody("EVM receipt log has no address".into()))?;
+    let data_object = log.get("data").filter(|value| value.is_object());
+    let topics = log
+        .get("topics")
+        .or_else(|| data_object.and_then(|value| value.get("topics")))
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| Error::Custody("EVM receipt log has no topics".into()))?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or_else(|| Error::Custody("EVM log topic is not hex".into()))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let data = data_object
+        .and_then(|value| value.get("data"))
+        .or_else(|| log.get("data"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| Error::Custody("EVM receipt log has no data".into()))?;
+    Ok((address, topics, data))
+}
+
+fn evm_word(data: &[u8], index: usize) -> Result<&[u8]> {
+    data.get(index * 32..(index + 1) * 32)
+        .ok_or_else(|| Error::Custody("EVM event ABI data is truncated".into()))
+}
+
+fn evm_dynamic_bytes(data: &[u8], word_index: usize) -> Result<Vec<u8>> {
+    let offset: usize = alloy::primitives::U256::from_be_slice(evm_word(data, word_index)?)
+        .try_into()
+        .map_err(|_| Error::Custody("EVM event ABI offset exceeds usize".into()))?;
+    let length_end = offset
+        .checked_add(32)
+        .ok_or_else(|| Error::Custody("EVM event ABI offset overflows usize".into()))?;
+    let length_word = data
+        .get(offset..length_end)
+        .ok_or_else(|| Error::Custody("EVM event ABI offset is out of bounds".into()))?;
+    let length: usize = alloy::primitives::U256::from_be_slice(length_word)
+        .try_into()
+        .map_err(|_| Error::Custody("EVM event ABI length exceeds usize".into()))?;
+    let bytes_end = length_end
+        .checked_add(length)
+        .ok_or_else(|| Error::Custody("EVM event ABI length overflows usize".into()))?;
+    data.get(length_end..bytes_end)
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| Error::Custody("EVM event ABI bytes are truncated".into()))
+}
+
+/// Extracts the official EVM `PacketSent` and `OFTSent` events from a
+/// successful source receipt and binds them to the configured contracts.
+pub fn decode_evm_source_send(
+    logs: &[serde_json::Value],
+    endpoint: &str,
+    oft: &str,
+    destination_eid: u32,
+) -> Result<SourceSendEvidenceV1> {
+    let packet_topic = format!(
+        "0x{}",
+        hex::encode(crate::evm::keccak256_of(b"PacketSent(bytes,bytes,address)"))
+    );
+    let oft_topic = format!(
+        "0x{}",
+        hex::encode(crate::evm::keccak256_of(
+            b"OFTSent(bytes32,uint32,address,uint256,uint256)"
+        ))
+    );
+    let mut packet: Option<(usize, Vec<u8>, String)> = None;
+    let mut sent: Option<(usize, [u8; 32], u128, u128)> = None;
+    for (index, log) in logs.iter().enumerate() {
+        let (address, topics, data_hex) = evm_log_parts(log)?;
+        let Some(topic0) = topics.first() else {
+            continue;
+        };
+        let data = hex::decode(data_hex.trim_start_matches("0x"))
+            .map_err(|_| Error::Custody("EVM event data is not hex".into()))?;
+        if address.eq_ignore_ascii_case(endpoint) && topic0.eq_ignore_ascii_case(&packet_topic) {
+            if packet.is_some() {
+                return Err(Error::Custody(
+                    "source receipt emitted multiple PacketSent events".into(),
+                ));
+            }
+            let encoded_packet = evm_dynamic_bytes(&data, 0)?;
+            let library_word = evm_word(&data, 2)?;
+            if library_word[..12].iter().any(|byte| *byte != 0) {
+                return Err(Error::Custody(
+                    "PacketSent sendLibrary is not an address word".into(),
+                ));
+            }
+            packet = Some((
+                index,
+                encoded_packet,
+                format!("0x{}", hex::encode(&library_word[12..])),
+            ));
+        } else if address.eq_ignore_ascii_case(oft) && topic0.eq_ignore_ascii_case(&oft_topic) {
+            if sent.is_some() {
+                return Err(Error::Custody(
+                    "source receipt emitted multiple OFTSent events".into(),
+                ));
+            }
+            if topics.len() != 3 {
+                return Err(Error::Custody(
+                    "OFTSent indexed topics are malformed".into(),
+                ));
+            }
+            let guid: [u8; 32] = hex::decode(topics[1].trim_start_matches("0x"))
+                .map_err(|_| Error::Custody("OFTSent GUID is not hex".into()))?
+                .try_into()
+                .map_err(|_| Error::Custody("OFTSent GUID is not 32 bytes".into()))?;
+            let dst: u32 = alloy::primitives::U256::from_be_slice(evm_word(&data, 0)?)
+                .try_into()
+                .map_err(|_| Error::Custody("OFTSent destination EID exceeds u32".into()))?;
+            if dst != destination_eid {
+                return Err(Error::Custody(
+                    "OFTSent destination EID differs from the intent".into(),
+                ));
+            }
+            let amount_sent_ld = alloy::primitives::U256::from_be_slice(evm_word(&data, 1)?)
+                .try_into()
+                .map_err(|_| Error::Custody("OFTSent amountSentLD exceeds u128".into()))?;
+            let amount_received_ld = alloy::primitives::U256::from_be_slice(evm_word(&data, 2)?)
+                .try_into()
+                .map_err(|_| Error::Custody("OFTSent amountReceivedLD exceeds u128".into()))?;
+            sent = Some((index, guid, amount_sent_ld, amount_received_ld));
+        }
+    }
+    let (packet_index, encoded_packet, send_library) = packet.ok_or_else(|| {
+        Error::Custody("finalized source receipt has no authenticated PacketSent event".into())
+    })?;
+    let (sent_index, guid, amount_sent_ld, amount_received_ld) = sent.ok_or_else(|| {
+        Error::Custody("finalized source receipt has no authenticated OFTSent event".into())
+    })?;
+    if encoded_packet.len() < 113 || encoded_packet[81..113] != guid {
+        return Err(Error::Custody(
+            "PacketSent packet GUID differs from OFTSent".into(),
+        ));
+    }
+    Ok(SourceSendEvidenceV1 {
+        encoded_packet,
+        send_library,
+        amount_sent_ld,
+        amount_received_ld,
+        event_coordinate: format!("log:{packet_index},oft:{sent_index}"),
+    })
+}
+
+#[cfg(test)]
+mod source_send_tests {
+    use super::{decode_evm_source_send, decode_stellar_source_send};
+    use stellar_baselib::xdr::{
+        ContractEvent, ContractEventBody, ContractEventType, ContractEventV0, ContractId,
+        ExtensionPoint, Hash, Int128Parts, ScAddress, ScBytes, ScMap, ScMapEntry, ScSymbol, ScVal,
+        StringM, VecM,
+    };
+
+    const ENDPOINT: &str = "CALTBA5S6GRJEHAXFP45LGGLKWWAF7HTZCPNUBUJF2HWWRRLQNV35AIV";
+    const OFT: &str = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
+    const LIBRARY: &str = "CCQLLRE5JBAWYCW3KTWOIWLMFDUOKROQVZNSALQMGOSXNW3ERUOWTZGK";
+
+    fn symbol(value: &str) -> ScVal {
+        ScVal::Symbol(ScSymbol(
+            StringM::try_from(value.as_bytes().to_vec()).unwrap(),
+        ))
+    }
+
+    fn map(entries: Vec<(&str, ScVal)>) -> ScVal {
+        ScVal::Map(Some(ScMap(
+            entries
+                .into_iter()
+                .map(|(key, val)| ScMapEntry {
+                    key: symbol(key),
+                    val,
+                })
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
+        )))
+    }
+
+    fn i128_value(value: i128) -> ScVal {
+        let bytes = value.to_be_bytes();
+        ScVal::I128(Int128Parts {
+            hi: i64::from_be_bytes(bytes[..8].try_into().unwrap()),
+            lo: u64::from_be_bytes(bytes[8..].try_into().unwrap()),
+        })
+    }
+
+    fn stellar_event(contract: &str, topics: Vec<ScVal>, data: ScVal) -> ContractEvent {
+        ContractEvent {
+            ext: ExtensionPoint::V0,
+            contract_id: Some(ContractId(Hash(
+                crate::codec::strkey_to_bytes32(contract).unwrap(),
+            ))),
+            type_: ContractEventType::Contract,
+            body: ContractEventBody::V0(ContractEventV0 {
+                topics: VecM::try_from(topics).unwrap(),
+                data,
+            }),
+        }
+    }
+
+    fn packet(guid: [u8; 32], amount: u64) -> Vec<u8> {
+        let mut packet = vec![1];
+        packet.extend(7u64.to_be_bytes());
+        packet.extend(40_600u32.to_be_bytes());
+        packet.extend([1u8; 32]);
+        packet.extend(40_161u32.to_be_bytes());
+        packet.extend([2u8; 32]);
+        packet.extend(guid);
+        packet.extend([3u8; 32]);
+        packet.extend(amount.to_be_bytes());
+        packet
+    }
+
+    #[test]
+    fn decodes_authenticated_stellar_packet_and_oft_events() {
+        use stellar_baselib::{address::Address, address::AddressTrait as _};
+        let guid = [9u8; 32];
+        let packet = packet(guid, 100_000);
+        let library = Address::from_string(LIBRARY)
+            .unwrap()
+            .to_sc_address()
+            .unwrap();
+        let events = vec![
+            stellar_event(
+                ENDPOINT,
+                vec![symbol("packet_sent")],
+                map(vec![
+                    (
+                        "encoded_packet",
+                        ScVal::Bytes(ScBytes(packet.clone().try_into().unwrap())),
+                    ),
+                    (
+                        "options",
+                        ScVal::Bytes(ScBytes(Vec::<u8>::new().try_into().unwrap())),
+                    ),
+                    ("send_library", ScVal::Address(library)),
+                ]),
+            ),
+            stellar_event(
+                OFT,
+                vec![
+                    symbol("oft_sent"),
+                    ScVal::Bytes(ScBytes(guid.to_vec().try_into().unwrap())),
+                    ScVal::U32(40_161),
+                    ScVal::Address(ScAddress::Contract(ContractId(Hash([4u8; 32])))),
+                ],
+                map(vec![
+                    ("amount_received_ld", i128_value(1_000_000)),
+                    ("amount_sent_ld", i128_value(1_000_000)),
+                ]),
+            ),
+        ];
+        let decoded = decode_stellar_source_send(&events, ENDPOINT, OFT, 40_161).unwrap();
+        assert_eq!(decoded.encoded_packet, packet);
+        assert_eq!(decoded.send_library, LIBRARY);
+        assert_eq!(decoded.amount_received_ld, 1_000_000);
+    }
+
+    fn word(value: u128) -> Vec<u8> {
+        let mut word = vec![0u8; 32];
+        word[16..].copy_from_slice(&value.to_be_bytes());
+        word
+    }
+
+    fn encode_packet_sent(packet: &[u8], library: &str) -> String {
+        let mut data = Vec::new();
+        data.extend(word(96));
+        let padded_packet = packet.len().div_ceil(32) * 32;
+        data.extend(word((128 + padded_packet) as u128));
+        let address = hex::decode(library.trim_start_matches("0x")).unwrap();
+        data.extend([0u8; 12]);
+        data.extend(address);
+        data.extend(word(packet.len() as u128));
+        data.extend(packet);
+        data.resize(128 + padded_packet, 0);
+        data.extend(word(0));
+        format!("0x{}", hex::encode(data))
+    }
+
+    #[test]
+    fn decodes_authenticated_evm_packet_and_oft_events() {
+        let endpoint = "0x1111111111111111111111111111111111111111";
+        let oft = "0x2222222222222222222222222222222222222222";
+        let library = "0x3333333333333333333333333333333333333333";
+        let guid = [9u8; 32];
+        let packet = packet(guid, 100_000);
+        let packet_topic = format!(
+            "0x{}",
+            hex::encode(crate::evm::keccak256_of(b"PacketSent(bytes,bytes,address)"))
+        );
+        let oft_topic = format!(
+            "0x{}",
+            hex::encode(crate::evm::keccak256_of(
+                b"OFTSent(bytes32,uint32,address,uint256,uint256)"
+            ))
+        );
+        let mut oft_data = word(40_161);
+        oft_data.extend(word(100_000));
+        oft_data.extend(word(100_000));
+        let logs = vec![
+            serde_json::json!({
+                "address": endpoint,
+                "topics": [packet_topic],
+                "data": encode_packet_sent(&packet, library),
+            }),
+            serde_json::json!({
+                "address": oft,
+                "topics": [oft_topic, format!("0x{}", hex::encode(guid)), format!("0x{}", "00".repeat(32))],
+                "data": format!("0x{}", hex::encode(oft_data)),
+            }),
+        ];
+        let decoded = decode_evm_source_send(&logs, endpoint, oft, 40_161).unwrap();
+        assert_eq!(decoded.encoded_packet, packet);
+        assert_eq!(decoded.send_library, library);
+        assert_eq!(decoded.amount_sent_ld, 100_000);
+    }
+}
+
 alloy::sol! {
     struct OftSendParamV1 {
         uint32 dstEid;
@@ -229,7 +709,6 @@ pub(crate) fn stellar_address(value: &str) -> Result<stellar_baselib::xdr::ScVal
     use std::str::FromStr as _;
     use stellar_baselib::xdr::{AccountId, ContractId, Hash, PublicKey, ScAddress, ScVal, Uint256};
     use stellar_strkey::Strkey;
-
 
     let address = match Strkey::from_str(value) {
         Ok(Strkey::PublicKeyEd25519(key)) => {
@@ -603,10 +1082,7 @@ pub fn build_stellar_operation_for_route(
             let limit = i128::try_from(*limit_raw)
                 .map_err(|_| Error::InvalidInput("Stellar rate limit exceeds i128".into()))?;
             let config = stellar_map([
-                (
-                    "limit",
-                    ScVal::I128(stellar_i128_parts(limit)),
-                ),
+                ("limit", ScVal::I128(stellar_i128_parts(limit))),
                 (
                     "mode",
                     stellar_unit_enum(if mode == "net" {

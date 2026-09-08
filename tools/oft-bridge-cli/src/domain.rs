@@ -414,9 +414,7 @@ pub enum LocalPreparationV1 {
 pub enum LegFeeCeilingV1 {
     /// Stellar source: ceiling in stroops on the total Soroban transaction
     /// fee, including the resource fee the assembled envelope carries.
-    Stellar {
-        resource_fee_ceiling_raw: String,
-    },
+    Stellar { resource_fee_ceiling_raw: String },
     /// EVM source: EIP-1559 fee and gas ceilings.
     Evm {
         max_fee_per_gas_wei: String,
@@ -444,6 +442,17 @@ pub struct LegAdditionalObligationV1 {
     pub outstanding_raw: String,
     /// Recorded cap the resulting outstanding obligation must respect.
     pub cap_raw: String,
+}
+
+/// Executable source-chain finality policy for a canary send.
+///
+/// `confirmed` requires the transaction's inclusion coordinate to remain
+/// canonical after at least one later source block/ledger has closed. This is
+/// deliberately stronger than accepting the first successful receipt.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LegFinalityPolicyV1 {
+    Confirmed,
 }
 
 /// Typed, route-bound leg intent produced by `leg quote` and consumed by
@@ -486,7 +495,7 @@ pub struct LegIntentV1 {
     pub pre_send_snapshot: Option<LegPreSendSnapshotV1>,
     /// Route finality policy recorded at quote time.
     #[serde(default)]
-    pub finality_policy: Option<String>,
+    pub finality_policy: Option<LegFinalityPolicyV1>,
     /// Recorded additional-obligation policy and cap.
     #[serde(default)]
     pub additional_obligation: Option<LegAdditionalObligationV1>,
@@ -537,29 +546,18 @@ impl LegIntentV1 {
                 )));
             }
         }
-        if self.peer_snapshot_sha256.len() != 64
-            || hex::decode(&self.peer_snapshot_sha256).is_err()
+        if self.peer_snapshot_sha256.len() != 64 || hex::decode(&self.peer_snapshot_sha256).is_err()
         {
             return Err(Error::InvalidInput(
                 "peer_snapshot_sha256 must be a 64-char hex digest".into(),
             ));
         }
-        if self
-            .config_snapshot_sha256
-            .trim_start_matches("0x")
-            .len()
-            != 64
-        {
+        if self.config_snapshot_sha256.trim_start_matches("0x").len() != 64 {
             return Err(Error::InvalidInput(
                 "config_snapshot_sha256 must be a 64-char hex digest".into(),
             ));
         }
-        if self
-            .custody_snapshot_sha256
-            .trim_start_matches("0x")
-            .len()
-            != 64
-        {
+        if self.custody_snapshot_sha256.trim_start_matches("0x").len() != 64 {
             return Err(Error::InvalidInput(
                 "custody_snapshot_sha256 must be a 64-char hex digest".into(),
             ));
@@ -613,13 +611,6 @@ impl LegIntentV1 {
                         "pre-send snapshot {name} must be decimal"
                     )));
                 }
-            }
-        }
-        if let Some(policy) = &self.finality_policy {
-            if policy.trim().is_empty() {
-                return Err(Error::InvalidInput(
-                    "finality_policy must not be empty".into(),
-                ));
             }
         }
         if let Some(obligation) = &self.additional_obligation {
@@ -711,6 +702,9 @@ pub struct SafeTransactionV1 {
 pub struct EvmPlanBindingV1 {
     /// Decimal string chain ID.
     pub chain_id: String,
+    /// Canonical lowercase `0x` address authorized to sign a direct EOA
+    /// transaction, or the Safe address for a Safe-bound transaction.
+    pub sender: String,
     pub target: String,
     /// Decimal string wei value.
     pub value: String,

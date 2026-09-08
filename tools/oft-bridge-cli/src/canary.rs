@@ -10,8 +10,6 @@ use crate::error::{Error, Result};
 use crate::output::CommandData;
 use crate::state::RouteStore;
 
-
-
 /// Read-only route access: allowed on mainnet (inspection/drafting).
 fn route_read(state_path: &Path) -> Result<crate::domain::RouteStateV1> {
     let state = RouteStore::open(state_path)?.load_state()?;
@@ -125,7 +123,6 @@ fn refund_for(
     Ok(refund)
 }
 
-
 /// Canonical intent derived exclusively from converged recorded state and
 /// finalized custody evidence. `leg quote` writes this; `leg send` re-derives
 /// it to refuse any drift before signing or proposal. Missing fee, rate,
@@ -189,13 +186,17 @@ fn build_intent(
         .effective_config
         .get("canary:finality_policy")
         .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| Error::Custody("effective route is missing canary:finality_policy".into()))?
-        .to_string();
-    if finality_policy.trim().is_empty() {
-        return Err(Error::Custody(
-            "recorded canary finality policy is empty".into(),
-        ));
-    }
+        .ok_or_else(|| {
+            Error::Custody("effective route is missing canary:finality_policy".into())
+        })?;
+    let finality_policy = match finality_policy {
+        "confirmed" => crate::domain::LegFinalityPolicyV1::Confirmed,
+        other => {
+            return Err(Error::Policy(format!(
+                "unsupported canary finality policy {other:?}; expected confirmed"
+            )))
+        }
+    };
     let fee_ceiling = match direction {
         Direction::StellarToEvm => crate::domain::LegFeeCeilingV1::Stellar {
             resource_fee_ceiling_raw: config_raw(
@@ -215,12 +216,9 @@ fn build_intent(
                 &format!("canary:evm_max_priority_fee_per_gas_wei:{direction_label}"),
             )?
             .to_string(),
-            gas_limit: config_raw(
-                state,
-                &format!("canary:evm_gas_limit:{direction_label}"),
-            )?
-            .try_into()
-            .map_err(|_| Error::Custody("recorded EVM gas limit exceeds u64".into()))?,
+            gas_limit: config_raw(state, &format!("canary:evm_gas_limit:{direction_label}"))?
+                .try_into()
+                .map_err(|_| Error::Custody("recorded EVM gas limit exceeds u64".into()))?,
         },
     };
     let outstanding_cap_raw = config_raw(state, "canary:max_outstanding_obligation_raw")?;
@@ -282,7 +280,14 @@ fn revalidate_intent(
     let amount: u128 = intent.amount_raw.parse().map_err(|_| {
         Error::InvalidInput("leg intent amount_raw is not a decimal integer".into())
     })?;
-    let rederived = build_intent(state, intent.direction, amount, &intent.to, now_unix, outstanding_raw)?;
+    let rederived = build_intent(
+        state,
+        intent.direction,
+        amount,
+        &intent.to,
+        now_unix,
+        outstanding_raw,
+    )?;
     let mut drift: Vec<&'static str> = Vec::new();
     if intent.route_id != rederived.route_id {
         drift.push("route_id");
@@ -420,7 +425,14 @@ pub fn quote(
     let state = route_read(state_path)?;
     let store = crate::state::RouteStore::open(state_path)?;
     let outstanding = outstanding_obligations(&store)?;
-    let intent = build_intent(&state, direction, amount_raw, to, crate::now_unix()?, outstanding)?;
+    let intent = build_intent(
+        &state,
+        direction,
+        amount_raw,
+        to,
+        crate::now_unix()?,
+        outstanding,
+    )?;
     crate::state::write_create_new_json(out, &intent)?;
     Ok(CommandData {
         result: serde_json::to_value(&intent)?,
@@ -440,7 +452,14 @@ pub fn quote_live(
     let state = route_read(state_path)?;
     let store = crate::state::RouteStore::open(state_path)?;
     let outstanding = outstanding_obligations(&store)?;
-    let mut intent = build_intent(&state, direction, amount_raw, to, crate::now_unix()?, outstanding)?;
+    let mut intent = build_intent(
+        &state,
+        direction,
+        amount_raw,
+        to,
+        crate::now_unix()?,
+        outstanding,
+    )?;
     let observation = observe_leg(&state, direction, stellar, evm)?;
     intent.quote_source_ledger = observation.quote_source_ledger;
     intent.quote_source_block = observation.quote_source_block;
@@ -464,9 +483,17 @@ pub fn send_operation(
     intent_path: &Path,
     allow_additional_obligation: bool,
 ) -> Result<crate::domain::OperationV1> {
+    let intent: crate::domain::LegIntentV1 = crate::state::read_json(intent_path)?;
+    validate_send_intent(state_path, intent, allow_additional_obligation)
+}
+
+fn validate_send_intent(
+    state_path: &Path,
+    intent: crate::domain::LegIntentV1,
+    allow_additional_obligation: bool,
+) -> Result<crate::domain::OperationV1> {
     let state = route_environment(state_path)?;
     let store = crate::state::RouteStore::open(state_path)?;
-    let intent: crate::domain::LegIntentV1 = crate::state::read_json(intent_path)?;
     let intent = intent.parse()?;
     if intent.route_id != state.route_id || intent.desired_sha256 != state.desired_sha256 {
         return Err(Error::Conflict(
@@ -499,29 +526,25 @@ pub fn send_operation(
             "leg intent exceeds the current canary cap".into(),
         ));
     }
-    if outstanding > 0 {
-        if !allow_additional_obligation {
-            return Err(Error::Policy(
-                "an outstanding bridge obligation requires --allow-additional-obligation".into(),
-            ));
-        }
-        let cap: u128 = intent
-            .additional_obligation
-            .as_ref()
-            .ok_or_else(|| {
-                Error::Custody("leg intent is missing the recorded obligation cap".into())
-            })?
-            .cap_raw
-            .parse()
-            .map_err(|_| Error::Custody("leg intent obligation cap is not decimal".into()))?;
-        let resulting = outstanding
-            .checked_add(amount)
-            .ok_or_else(|| Error::Custody("resulting obligation overflow".into()))?;
-        if resulting > cap {
-            return Err(Error::Policy(format!(
-                "resulting outstanding obligation {resulting} exceeds the recorded cap {cap}"
-            )));
-        }
+    if outstanding > 0 && !allow_additional_obligation {
+        return Err(Error::Policy(
+            "an outstanding bridge obligation requires --allow-additional-obligation".into(),
+        ));
+    }
+    let cap: u128 = intent
+        .additional_obligation
+        .as_ref()
+        .ok_or_else(|| Error::Custody("leg intent is missing the recorded obligation cap".into()))?
+        .cap_raw
+        .parse()
+        .map_err(|_| Error::Custody("leg intent obligation cap is not decimal".into()))?;
+    let resulting = outstanding
+        .checked_add(amount)
+        .ok_or_else(|| Error::Custody("resulting obligation overflow".into()))?;
+    if resulting > cap {
+        return Err(Error::Policy(format!(
+            "resulting outstanding obligation {resulting} exceeds the recorded cap {cap}"
+        )));
     }
     Ok(crate::domain::OperationV1::SendLeg {
         vm: match intent.direction {
@@ -536,8 +559,7 @@ pub fn send_operation(
 /// rate-limit surface lives in `effective_config` and is already bound by
 /// `config_snapshot_sha256`; peer bindings are chain state, not config, so they
 /// are hashed explicitly here.
-fn peer_records(state: &crate::domain::RouteStateV1) -> serde_json::Map<String, serde_json::Value>
-{
+fn peer_records(state: &crate::domain::RouteStateV1) -> serde_json::Map<String, serde_json::Value> {
     state
         .contracts
         .iter()
@@ -557,8 +579,6 @@ struct LegLiveObservationV1 {
     observed_sequence_nonce: String,
     pre_send_snapshot: crate::domain::LegPreSendSnapshotV1,
 }
-
-
 
 /// Executes a read-only EVM view and decodes its 32-byte word result as a
 /// decimal string, mirroring the recorded economic readback pattern.
@@ -623,9 +643,7 @@ fn observe_leg(
         }
     };
     let source_balance_raw = match direction {
-        Direction::StellarToEvm => {
-            stellar.token_balance(stellar_token, &sender, stellar_source)?
-        }
+        Direction::StellarToEvm => stellar.token_balance(stellar_token, &sender, stellar_source)?,
         Direction::EvmToStellar => evm_word(
             evm,
             evm_token,
@@ -711,13 +729,393 @@ pub fn send_operation_live(
     stellar: &dyn crate::stellar::StellarChain,
     evm: &dyn crate::evm::EvmChain,
 ) -> Result<crate::domain::OperationV1> {
-    let operation = send_operation(state_path, intent_path, allow_additional_obligation)?;
-    let state = route_environment(state_path)?;
     let intent: crate::domain::LegIntentV1 = crate::state::read_json(intent_path)?;
-    let intent = intent.parse()?;
+    let operation = validate_send_intent(state_path, intent.clone(), allow_additional_obligation)?;
+    let state = route_environment(state_path)?;
     let observation = observe_leg(&state, intent.direction, stellar, evm)?;
     reject_live_drift(&intent, &observation)?;
     Ok(operation)
+}
+
+/// Revalidates the exact already-selected send operation while the caller
+/// holds the sender-domain mutation guard. The operation's embedded intent is
+/// the single source of truth, so replacing the quote file cannot swap the
+/// object that is later planned and signed.
+pub fn revalidate_locked_send(
+    state_path: &Path,
+    operation: &crate::domain::OperationV1,
+    allow_additional_obligation: bool,
+    stellar: &dyn crate::stellar::StellarChain,
+    evm: &dyn crate::evm::EvmChain,
+) -> Result<()> {
+    let crate::domain::OperationV1::SendLeg { intent, .. } = operation else {
+        return Ok(());
+    };
+    let validated = validate_send_intent(
+        state_path,
+        intent.as_ref().clone(),
+        allow_additional_obligation,
+    )?;
+    if &validated != operation {
+        return Err(Error::Conflict(
+            "locked leg validation produced a different operation".into(),
+        ));
+    }
+    let state = route_environment(state_path)?;
+    let observation = observe_leg(&state, intent.direction, stellar, evm)?;
+    reject_live_drift(intent, &observation)
+}
+
+/// Proves the plan used the same source sequence/nonce observed by the locked
+/// validation immediately before planning.
+pub fn verify_plan_source_slot(
+    operation: &crate::domain::OperationV1,
+    plan: &crate::domain::ExecutablePlanV1,
+) -> Result<()> {
+    let crate::domain::OperationV1::SendLeg { vm, intent } = operation else {
+        return Ok(());
+    };
+    let observed = intent.observed_sequence_nonce.as_deref().ok_or_else(|| {
+        Error::Conflict("live send intent omitted its observed source sequence/nonce".into())
+    })?;
+    let planned = match vm {
+        crate::domain::Vm::Stellar => plan
+            .stellar
+            .as_ref()
+            .map(|binding| binding.sequence.as_str()),
+        crate::domain::Vm::Evm => plan.evm.as_ref().map(|binding| binding.nonce.as_str()),
+    }
+    .ok_or_else(|| Error::Conflict("send plan omitted its source binding".into()))?;
+    if planned != observed {
+        return Err(Error::Conflict(format!(
+            "send plan source slot {planned} differs from locked observation {observed}"
+        )));
+    }
+    Ok(())
+}
+
+/// Returns true only after the successful EVM receipt survived into a later
+/// block and a fresh canonical receipt lookup still binds the same block.
+pub fn evm_source_finalized(
+    intent: &crate::domain::LegIntentV1,
+    first: &crate::evm::EvmReceiptV1,
+    latest_block: u64,
+    canonical: Option<&crate::evm::EvmReceiptV1>,
+) -> Result<bool> {
+    match intent.finality_policy {
+        Some(crate::domain::LegFinalityPolicyV1::Confirmed) => {}
+        None => return Err(Error::Policy("send intent has no finality policy".into())),
+    }
+    if first.succeeded != Some(true) {
+        return Ok(false);
+    }
+    let block_hash = first
+        .raw
+        .get("blockHash")
+        .and_then(serde_json::Value::as_str);
+    let (Some(block_number), Some(block_hash)) = (first.block_number, block_hash) else {
+        return Ok(false);
+    };
+    if latest_block <= block_number {
+        return Ok(false);
+    }
+    let Some(canonical) = canonical else {
+        return Ok(false);
+    };
+    Ok(canonical.succeeded == Some(true)
+        && canonical
+            .transaction_hash
+            .eq_ignore_ascii_case(&first.transaction_hash)
+        && canonical.block_number == Some(block_number)
+        && canonical
+            .raw
+            .get("blockHash")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value.eq_ignore_ascii_case(block_hash)))
+}
+
+/// Returns true only after the successful Stellar transaction remains in the
+/// same closed ledger while the RPC has advanced to a later ledger.
+pub fn stellar_source_finalized(
+    intent: &crate::domain::LegIntentV1,
+    first: &crate::stellar::StellarTransactionStatusV1,
+    latest_ledger: u32,
+    canonical: &crate::stellar::StellarTransactionStatusV1,
+) -> Result<bool> {
+    match intent.finality_policy {
+        Some(crate::domain::LegFinalityPolicyV1::Confirmed) => {}
+        None => return Err(Error::Policy("send intent has no finality policy".into())),
+    }
+    let Some(ledger) = first.ledger else {
+        return Ok(false);
+    };
+    Ok(first.status == "success"
+        && latest_ledger > ledger
+        && canonical.status == "success"
+        && canonical.ledger == Some(ledger))
+}
+
+fn required_config<'a>(
+    state: &'a crate::domain::RouteStateV1,
+    key: &str,
+) -> Result<&'a serde_json::Value> {
+    state
+        .effective_config
+        .get(key)
+        .ok_or_else(|| Error::Custody(format!("effective route is missing {key}")))
+}
+
+fn required_config_string(state: &crate::domain::RouteStateV1, key: &str) -> Result<String> {
+    required_config(state, key)?
+        .as_str()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| Error::Custody(format!("effective route field {key} is not a string")))
+}
+
+fn build_source_message_record(
+    state: &crate::domain::RouteStateV1,
+    intent: &crate::domain::LegIntentV1,
+    evidence: crate::layerzero::SourceSendEvidenceV1,
+    source_height: String,
+    source_transaction: String,
+) -> Result<crate::domain::MessageRecordV1> {
+    use sha2::{Digest as _, Sha256};
+
+    if crate::canonical_sha256(&state.effective_config)? != intent.config_snapshot_sha256 {
+        return Err(Error::Conflict(
+            "effective route config changed after the source-send intent was signed".into(),
+        ));
+    }
+    if evidence.encoded_packet.len() < 153 {
+        return Err(Error::Custody(
+            "LayerZero OFT packet is shorter than header, GUID, and OFT message".into(),
+        ));
+    }
+    let packet_header = &evidence.encoded_packet[..81];
+    let guid: [u8; 32] = evidence.encoded_packet[81..113]
+        .try_into()
+        .map_err(|_| Error::Custody("LayerZero packet GUID is malformed".into()))?;
+    let message = &evidence.encoded_packet[113..];
+    let header = crate::layerzero::decode_packet_header(&hex::encode(packet_header))?;
+    let expected_recipient = match intent.direction {
+        Direction::StellarToEvm => crate::codec::evm_address_to_bytes32(&intent.to)?,
+        Direction::EvmToStellar => crate::codec::strkey_to_bytes32(&intent.to)?,
+    };
+    if message[..32] != expected_recipient {
+        return Err(Error::Custody(
+            "OFT packet recipient differs from the signed leg intent".into(),
+        ));
+    }
+    let amount_sd = u64::from_be_bytes(
+        message[32..40]
+            .try_into()
+            .map_err(|_| Error::Custody("OFT packet amount is malformed".into()))?,
+    );
+    let source_decimals = match intent.direction {
+        Direction::StellarToEvm => state.asset.local_decimals,
+        Direction::EvmToStellar => required_config_string(state, "asset:evm_decimals")?
+            .parse()
+            .map_err(|_| Error::Custody("asset:evm_decimals is not a u8 decimal".into()))?,
+    };
+    let event_amount_sd = crate::codec::to_shared(evidence.amount_received_ld, source_decimals)?;
+    if u128::from(amount_sd) != event_amount_sd {
+        return Err(Error::Custody(
+            "OFT packet amount differs from the authenticated OFTSent event".into(),
+        ));
+    }
+    let requested: u128 = intent
+        .amount_raw
+        .parse()
+        .map_err(|_| Error::Custody("leg intent amount is not decimal".into()))?;
+    let minimum: u128 = intent
+        .minimum_received_raw
+        .parse()
+        .map_err(|_| Error::Custody("leg intent minimum amount is not decimal".into()))?;
+    if evidence.amount_sent_ld > requested
+        || evidence.amount_received_ld > evidence.amount_sent_ld
+        || evidence.amount_received_ld < minimum
+    {
+        return Err(Error::Custody(
+            "authenticated OFTSent amounts violate the signed leg intent".into(),
+        ));
+    }
+
+    let (source_vm, destination_vm, source_eid, destination_eid) = match intent.direction {
+        Direction::StellarToEvm => (
+            crate::domain::Vm::Stellar,
+            crate::domain::Vm::Evm,
+            state.identity.stellar_eid,
+            state.identity.evm_eid,
+        ),
+        Direction::EvmToStellar => (
+            crate::domain::Vm::Evm,
+            crate::domain::Vm::Stellar,
+            state.identity.evm_eid,
+            state.identity.stellar_eid,
+        ),
+    };
+    if header.source_eid != source_eid || header.destination_eid != destination_eid {
+        return Err(Error::Custody(
+            "LayerZero packet EIDs differ from the route".into(),
+        ));
+    }
+    let send_key = crate::route::config_key_send_library(source_vm, destination_eid);
+    let configured_send_library = required_config_string(state, &send_key)?;
+    if !configured_send_library.eq_ignore_ascii_case(&evidence.send_library) {
+        return Err(Error::Custody(
+            "PacketSent send library differs from the effective route".into(),
+        ));
+    }
+    let receive_key = crate::route::config_key_receive_library(destination_vm, source_eid);
+    let current_receive_library = required_config_string(state, &receive_key)?;
+    let uln_key = crate::route::config_key_uln_config(source_vm, destination_eid, "send")?;
+    let uln = required_config(state, &uln_key)?;
+    let executor_key = crate::route::config_key_executor_config(source_vm, destination_eid);
+    let executor = required_config(state, &executor_key)?;
+    let uln_typed: crate::layerzero::UlnConfigType3V1 = serde_json::from_value(uln.clone())?;
+    let dvn_snapshot = serde_json::json!({
+        "required_dvns": uln_typed.required_dvns,
+        "optional_dvns": uln_typed.optional_dvns,
+        "optional_threshold": uln_typed.optional_threshold,
+    });
+    let mut payload = Vec::with_capacity(32 + message.len());
+    payload.extend(guid);
+    payload.extend(message);
+    let evidence_sha256 = crate::canonical_sha256(&serde_json::json!({
+        "source_transaction": source_transaction,
+        "source_height": source_height,
+        "source_event_coordinate": evidence.event_coordinate,
+        "packet_sha256": hex::encode(Sha256::digest(&evidence.encoded_packet)),
+    }))?;
+    let (stage, net_locked_raw, burned_raw) = match intent.direction {
+        Direction::StellarToEvm => (
+            crate::domain::MessageStageV1::ForwardLocked,
+            evidence.amount_received_ld.to_string(),
+            "0".to_string(),
+        ),
+        Direction::EvmToStellar => (
+            crate::domain::MessageStageV1::ReverseBurned,
+            "0".to_string(),
+            evidence.amount_sent_ld.to_string(),
+        ),
+    };
+    Ok(crate::domain::MessageRecordV1 {
+        schema_name: "message_record".into(),
+        schema_version: crate::domain::SCHEMA_VERSION,
+        source_eid,
+        sender: hex::encode(header.sender),
+        nonce: header.nonce.to_string(),
+        guid: hex::encode(guid),
+        direction: intent.direction,
+        amount_raw: amount_sd.to_string(),
+        packet_sha256: hex::encode(Sha256::digest(&evidence.encoded_packet)),
+        packet_header: hex::encode(packet_header),
+        message: hex::encode(message),
+        payload_keccak256: hex::encode(crate::evm::keccak256_of(&payload)),
+        origin: format!(
+            "{source_eid}:{}:{}",
+            hex::encode(header.sender),
+            header.nonce
+        ),
+        receiver: state
+            .contracts
+            .get(match destination_vm {
+                crate::domain::Vm::Stellar => "stellar_oft",
+                crate::domain::Vm::Evm => "evm_oft",
+            })
+            .cloned()
+            .ok_or_else(|| Error::Custody("destination OFT is not recorded".into()))?,
+        current_receive_library,
+        old_receive_library: None,
+        receive_grace_until: None,
+        send_library: evidence.send_library,
+        uln_snapshot_sha256: crate::canonical_sha256(uln)?,
+        dvn_snapshot_sha256: crate::canonical_sha256(&dvn_snapshot)?,
+        executor_snapshot_sha256: crate::canonical_sha256(executor)?,
+        config_snapshot_sha256: intent.config_snapshot_sha256.clone(),
+        source_height,
+        source_event_coordinate: evidence.event_coordinate,
+        source_transaction,
+        destination_transaction: None,
+        recovery_transactions: Vec::new(),
+        debited_raw: evidence.amount_sent_ld.to_string(),
+        net_locked_raw,
+        minted_raw: "0".into(),
+        burned_raw,
+        unlocked_raw: "0".into(),
+        external_fee_raw: (evidence.amount_sent_ld - evidence.amount_received_ld).to_string(),
+        dust_raw: (requested - evidence.amount_sent_ld).to_string(),
+        reconciliation_classification: None,
+        status_events: vec![crate::domain::MessageStatusEventV1 {
+            stage,
+            observed_at_unix: crate::now_unix()?,
+            evidence_sha256,
+        }],
+    })
+}
+
+pub fn record_stellar_source_message(
+    store: &RouteStore,
+    intent: &crate::domain::LegIntentV1,
+    status: &crate::stellar::StellarTransactionStatusV1,
+    transaction_hash: &str,
+) -> Result<()> {
+    if store.has_message_for_source_transaction(transaction_hash)? {
+        return Ok(());
+    }
+    let state = store.load_state()?;
+    let endpoint = &state.identity.stellar_endpoint;
+    let oft = state
+        .contracts
+        .get("stellar_oft")
+        .ok_or_else(|| Error::Custody("source Stellar OFT is not recorded".into()))?;
+    let evidence = crate::layerzero::decode_stellar_source_send(
+        &status.contract_events,
+        endpoint,
+        oft,
+        intent.destination_eid,
+    )?;
+    store.append_message(build_source_message_record(
+        &state,
+        intent,
+        evidence,
+        status
+            .ledger
+            .ok_or_else(|| Error::Custody("finalized Stellar send has no ledger".into()))?
+            .to_string(),
+        transaction_hash.to_string(),
+    )?)
+}
+
+pub fn record_evm_source_message(
+    store: &RouteStore,
+    intent: &crate::domain::LegIntentV1,
+    receipt: &crate::evm::EvmReceiptV1,
+) -> Result<()> {
+    if store.has_message_for_source_transaction(&receipt.transaction_hash)? {
+        return Ok(());
+    }
+    let state = store.load_state()?;
+    let oft = state
+        .contracts
+        .get("evm_oft")
+        .ok_or_else(|| Error::Custody("source EVM OFT is not recorded".into()))?;
+    let evidence = crate::layerzero::decode_evm_source_send(
+        &receipt.logs,
+        &state.identity.evm_endpoint,
+        oft,
+        intent.destination_eid,
+    )?;
+    store.append_message(build_source_message_record(
+        &state,
+        intent,
+        evidence,
+        receipt
+            .block_number
+            .ok_or_else(|| Error::Custody("finalized EVM send has no block".into()))?
+            .to_string(),
+        receipt.transaction_hash.clone(),
+    )?)
 }
 
 /// Refuses signing when the live Stellar envelope fee exceeds the
@@ -799,7 +1197,6 @@ pub fn verify_evm_plan_fee_ceiling(
     }
     Ok(())
 }
-
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DestinationPacketState {

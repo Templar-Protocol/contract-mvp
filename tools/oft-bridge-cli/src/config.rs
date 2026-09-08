@@ -5,7 +5,6 @@ use std::{
     sync::OnceLock,
 };
 
-
 use url::Url;
 use zeroize::Zeroizing;
 
@@ -69,10 +68,7 @@ pub fn set_rpc_headers(headers: Vec<(String, Zeroizing<String>)>) {
 
 /// Returns the resolved RPC headers (empty when the flag was absent).
 pub fn rpc_headers() -> Vec<(String, Zeroizing<String>)> {
-    RPC_HEADERS
-        .get()
-        .map(Clone::clone)
-        .unwrap_or_default()
+    RPC_HEADERS.get().map(Clone::clone).unwrap_or_default()
 }
 /// Reads a credential-safe JSON object of HTTP header names to values.
 /// Callers must keep the returned values in memory only.

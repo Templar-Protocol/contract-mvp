@@ -94,8 +94,6 @@ impl DeployEvmOftBindingV1 {
         })
     }
 
-
-
     /// Canonical-JSON intent digest bound into plan/proposal/journal.
     pub fn intent_sha256(&self) -> Result<String> {
         crate::canonical_sha256(self)
@@ -230,6 +228,14 @@ pub fn sign_eip1559(
         return Err(Error::Policy(
             "Safe proposals require external Safe execution".into(),
         ));
+    }
+    let bound_sender = parse_address(&binding.sender)?;
+    if signer.address() != bound_sender {
+        return Err(Error::Custody(format!(
+            "EVM signer {} differs from plan sender {}; refusing to sign",
+            canonical_address(signer.address()),
+            canonical_address(bound_sender),
+        )));
     }
     let transaction = TxEip1559 {
         chain_id: binding
@@ -375,20 +381,22 @@ impl HttpEvmChain {
         } else {
             let mut header_map = reqwest::header::HeaderMap::new();
             for (name, value) in &headers {
-                let header_name = reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(
-                    |error| {
+                let header_name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
+                    .map_err(|error| {
                         Error::InvalidInput(format!("invalid RPC header name {name}: {error}"))
-                    },
-                )?;
-                let header_value = reqwest::header::HeaderValue::from_str(value.as_str()).map_err(
-                    |error| Error::InvalidInput(format!("RPC header {name} is invalid: {error}")),
-                )?;
+                    })?;
+                let header_value =
+                    reqwest::header::HeaderValue::from_str(value.as_str()).map_err(|error| {
+                        Error::InvalidInput(format!("RPC header {name} is invalid: {error}"))
+                    })?;
                 header_map.insert(header_name, header_value);
             }
             let client = reqwest::Client::builder()
                 .default_headers(header_map)
                 .build()
-                .map_err(|error| Error::Chain(format!("rpc header client build failed: {error}")))?;
+                .map_err(|error| {
+                    Error::Chain(format!("rpc header client build failed: {error}"))
+                })?;
             ProviderBuilder::new()
                 .disable_recommended_fillers()
                 .connect_reqwest(client, url)
@@ -403,7 +411,6 @@ impl HttpEvmChain {
     pub fn new(url: &str) -> Result<Self> {
         Self::connect_http(url)
     }
-
 
     #[must_use]
     pub fn with_artifact_root(mut self, root: &std::path::Path) -> Self {
@@ -458,6 +465,7 @@ impl EvmChain for HttpEvmChain {
     async fn account_nonce(&self, address: Address) -> Result<u64> {
         self.provider
             .get_transaction_count(address)
+            .pending()
             .await
             .map_err(|error| Error::Chain(format!("evm nonce read failed: {error}")))
     }
@@ -899,6 +907,7 @@ mod tests {
         let signer = fixture_signer(&[0xAB; 32]);
         let binding = crate::domain::EvmPlanBindingV1 {
             chain_id: "11155111".into(),
+            sender: canonical_address(signer.address()),
             target: "0x1111111111111111111111111111111111111111".into(),
             value: "17".into(),
             nonce: "9".into(),
@@ -933,5 +942,28 @@ mod tests {
             }
             other => panic!("unexpected transaction envelope: {other:?}"),
         }
+    }
+
+    #[test]
+    fn refuses_signer_that_differs_from_bound_sender() {
+        let signer = fixture_signer(&[0xAB; 32]);
+        let other = fixture_signer(&[0xCD; 32]);
+        let binding = crate::domain::EvmPlanBindingV1 {
+            chain_id: "11155111".into(),
+            sender: canonical_address(other.address()),
+            target: "0x1111111111111111111111111111111111111111".into(),
+            value: "0".into(),
+            nonce: "9".into(),
+            calldata: "0x".into(),
+            gas_limit: "50000".into(),
+            max_fee_per_gas_wei: "2000000000".into(),
+            max_priority_fee_per_gas_wei: "1000000000".into(),
+            transaction_digest: "plan-digest".into(),
+            safe: None,
+        };
+
+        let error = sign_eip1559(&binding, &signer).expect_err("wrong signer must refuse");
+        assert!(matches!(error, Error::Custody(_)));
+        assert!(error.to_string().contains("differs from plan sender"));
     }
 }

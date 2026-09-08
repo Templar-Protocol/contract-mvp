@@ -314,5 +314,3 @@ pub fn run_command(
         artifact: None,
     })
 }
-
-

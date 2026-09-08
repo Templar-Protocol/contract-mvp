@@ -114,6 +114,7 @@ impl StellarChain for FakeStellar {
                 status: "success".into(),
                 ledger: Some(4_311),
                 envelope_xdr: None,
+                contract_events: Vec::new(),
             },
         )
     }

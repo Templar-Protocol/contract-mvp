@@ -340,6 +340,7 @@ fn evm_plan_binding(
     };
     let binding = crate::domain::EvmPlanBindingV1 {
         chain_id: chain_id.to_string(),
+        sender: crate::evm::canonical_address(address),
         target,
         value: value.to_string(),
         nonce: nonce.to_string(),
@@ -538,6 +539,12 @@ fn validate_plan(plan: &ExecutablePlanV1) -> Result<()> {
         }
     }
     if let Some(evm) = plan.evm.as_ref() {
+        let sender = crate::evm::parse_address(&evm.sender)?;
+        if evm.sender != crate::evm::canonical_address(sender) {
+            return Err(Error::InvalidInput(
+                "evm plan sender must be a canonical lowercase address".into(),
+            ));
+        }
         let gas_policy = [
             ("gas_limit", &evm.gas_limit),
             ("max_fee_per_gas_wei", &evm.max_fee_per_gas_wei),
@@ -990,9 +997,7 @@ pub fn ingest_proposal_with_adapters(
             "proposal does not bind to this route state".into(),
         ));
     }
-    if proposal.plan.expires_at_unix
-        < crate::now_unix()?
-    {
+    if proposal.plan.expires_at_unix < crate::now_unix()? {
         return Err(Error::Conflict("proposal has expired".into()));
     }
     if let Some(opening) = &state.opening_custody {
@@ -1129,8 +1134,15 @@ fn verify_evm_transaction(
         .or_else(|| transaction.get("data"))
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| Error::Chain("EVM transaction omitted input".into()))?;
+    let bound_sender = crate::evm::parse_address(&binding.sender)?;
+    let expected_authorizer = crate::evm::parse_address(expected_authorizer)?;
+    if bound_sender != expected_authorizer {
+        return Err(Error::Conflict(
+            "EVM plan sender differs from the expected authorizer".into(),
+        ));
+    }
     if let Some(safe) = binding.safe.as_ref() {
-        if !actual_to.eq_ignore_ascii_case(expected_authorizer) {
+        if crate::evm::parse_address(actual_to)? != expected_authorizer {
             return Err(Error::Conflict(
                 "executed Safe transaction targets a different Safe".into(),
             ));
@@ -1140,10 +1152,15 @@ fn verify_evm_transaction(
     let actual_chain_id = json_uint(field("chainId")?)?;
     let actual_nonce = json_uint(field("nonce")?)?;
     let actual_value = json_uint(field("value")?)?;
+    let actual_from = field("from")?
+        .as_str()
+        .ok_or_else(|| Error::Chain("EVM transaction sender is not a string".into()))?;
+    let actual_from = crate::evm::parse_address(actual_from)?;
     let expected_to = &binding.target;
     if actual_chain_id != binding.chain_id
         || actual_nonce != binding.nonce
         || actual_value != binding.value
+        || actual_from != bound_sender
         || !actual_to.eq_ignore_ascii_case(expected_to)
         || !actual_input.eq_ignore_ascii_case(&binding.calldata)
     {
@@ -1152,6 +1169,85 @@ fn verify_evm_transaction(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod evm_transaction_binding_tests {
+    use super::verify_evm_transaction;
+    use crate::domain::EvmPlanBindingV1;
+    use crate::error::Error;
+
+    const SENDER: &str = "0x1111111111111111111111111111111111111111";
+    const TARGET: &str = "0x2222222222222222222222222222222222222222";
+
+    fn binding() -> EvmPlanBindingV1 {
+        EvmPlanBindingV1 {
+            chain_id: "11155111".into(),
+            sender: SENDER.into(),
+            target: TARGET.into(),
+            value: "17".into(),
+            nonce: "9".into(),
+            calldata: "0x1234".into(),
+            gas_limit: "50000".into(),
+            max_fee_per_gas_wei: "2000000000".into(),
+            max_priority_fee_per_gas_wei: "1000000000".into(),
+            transaction_digest: "plan-digest".into(),
+            safe: None,
+        }
+    }
+
+    fn transaction(from: &str) -> serde_json::Value {
+        serde_json::json!({
+            "from": from,
+            "to": TARGET,
+            "chainId": "0xaa36a7",
+            "nonce": "0x9",
+            "value": "0x11",
+            "input": "0x1234",
+        })
+    }
+
+    #[test]
+    fn accepts_direct_transaction_from_bound_sender() {
+        verify_evm_transaction(&binding(), &transaction(SENDER), SENDER)
+            .expect("matching recovered sender");
+    }
+
+    #[test]
+    fn refuses_direct_transaction_from_different_sender() {
+        let error = verify_evm_transaction(
+            &binding(),
+            &transaction("0x3333333333333333333333333333333333333333"),
+            SENDER,
+        )
+        .expect_err("different recovered sender must refuse");
+        assert!(matches!(error, Error::Conflict(_)));
+        assert!(error
+            .to_string()
+            .contains("executed EVM transaction differs from proposal"));
+    }
+
+    #[test]
+    fn refuses_direct_transaction_without_sender() {
+        let mut transaction = transaction(SENDER);
+        transaction.as_object_mut().expect("object").remove("from");
+        let error = verify_evm_transaction(&binding(), &transaction, SENDER)
+            .expect_err("missing recovered sender must refuse");
+        assert!(matches!(error, Error::Chain(_)));
+        assert!(error.to_string().contains("omitted from"));
+    }
+
+    #[test]
+    fn refuses_plan_sender_that_differs_from_route_authorizer() {
+        let error = verify_evm_transaction(
+            &binding(),
+            &transaction(SENDER),
+            "0x3333333333333333333333333333333333333333",
+        )
+        .expect_err("plan sender must remain bound to route authority");
+        assert!(matches!(error, Error::Conflict(_)));
+        assert!(error.to_string().contains("expected authorizer"));
+    }
 }
 
 fn verify_safe_execution(safe: &crate::domain::SafeTransactionV1, input: &str) -> Result<()> {

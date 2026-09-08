@@ -825,6 +825,10 @@ struct ChainEffectArgs {
     /// Mode-0600 non-symlink keystore password provider.
     #[arg(long, global = true, requires = "evm_keystore")]
     evm_password_file: Option<PathBuf>,
+    /// Shared, pre-existing operation-store root used to serialize every
+    /// route controlled by the same signing authority.
+    #[arg(long, global = true, requires = "execute")]
+    operation_store_root: Option<PathBuf>,
 }
 
 impl Cli {
@@ -1977,12 +1981,26 @@ fn chain_effect(
     operation: &OperationV1,
     effect: ChainEffectArgs,
 ) -> Result<CommandData> {
+    chain_effect_with_send_policy(state_path, operation, effect, false)
+}
+
+fn chain_effect_with_send_policy(
+    state_path: &Path,
+    operation: &OperationV1,
+    effect: ChainEffectArgs,
+    allow_additional_obligation: bool,
+) -> Result<CommandData> {
     let store = RouteStore::open(state_path)?;
     let state = store.load_state()?;
     if !effect.execute && effect.proposal_out.is_none() {
         return data(serde_json::json!({"preview": true, "operation": operation}));
     }
     environment::require_testnet(&state.identity)?;
+    if effect.execute && effect.operation_store_root.is_none() {
+        return Err(Error::InvalidInput(
+            "execution requires --operation-store-root".into(),
+        ));
+    }
     if let Some(out) = effect.proposal_out {
         return crate::governance::proposal_for_operation(
             state_path,
@@ -1993,8 +2011,12 @@ fn chain_effect(
         );
     }
     match crate::governance::operation_vm(operation) {
-        Vm::Stellar => execute_stellar_operation(state_path, operation, effect),
-        Vm::Evm => execute_evm_operation(state_path, operation, effect),
+        Vm::Stellar => {
+            execute_stellar_operation(state_path, operation, effect, allow_additional_obligation)
+        }
+        Vm::Evm => {
+            execute_evm_operation(state_path, operation, effect, allow_additional_obligation)
+        }
     }
 }
 
@@ -2032,6 +2054,70 @@ fn verify_evm_recovery_payload(
     Ok(())
 }
 
+fn journaled_operation(history: &[crate::state::OperationEventV1]) -> Result<OperationV1> {
+    history
+        .iter()
+        .find_map(|event| event.detail.get("operation"))
+        .cloned()
+        .ok_or_else(|| Error::Custody("operation journal omitted the planned operation".into()))
+        .and_then(|value| serde_json::from_value(value).map_err(Error::from))
+}
+
+fn stellar_terminal_state(
+    store: &RouteStore,
+    operation: &OperationV1,
+    stellar: &dyn crate::stellar::StellarChain,
+    status: &crate::stellar::StellarTransactionStatusV1,
+    transaction_hash: &str,
+) -> Result<crate::state::OperationState> {
+    if let OperationV1::SendLeg { intent, .. } = operation {
+        let latest = stellar.latest_ledger()?;
+        let canonical = stellar.transaction_status(transaction_hash)?;
+        if !crate::canary::stellar_source_finalized(intent, status, latest, &canonical)? {
+            return Ok(crate::state::OperationState::Ambiguous);
+        }
+        if crate::canary::record_stellar_source_message(store, intent, &canonical, transaction_hash)
+            .is_err()
+        {
+            return Ok(crate::state::OperationState::Ambiguous);
+        }
+    }
+    Ok(match status.status.as_str() {
+        "success" => crate::state::OperationState::Confirmed,
+        "failed" => crate::state::OperationState::Failed,
+        _ => crate::state::OperationState::Ambiguous,
+    })
+}
+
+fn evm_terminal_state(
+    store: &RouteStore,
+    operation: &OperationV1,
+    evm: &dyn crate::evm::EvmChain,
+    receipt: Option<&crate::evm::EvmReceiptV1>,
+) -> Result<crate::state::OperationState> {
+    let Some(receipt) = receipt else {
+        return Ok(crate::state::OperationState::Ambiguous);
+    };
+    if let OperationV1::SendLeg { intent, .. } = operation {
+        let latest = crate::block_on_result(evm.latest_block())?;
+        let canonical = crate::block_on_result(evm.transaction_receipt(&receipt.transaction_hash))?;
+        if !crate::canary::evm_source_finalized(intent, receipt, latest, canonical.as_ref())? {
+            return Ok(crate::state::OperationState::Ambiguous);
+        }
+        let Some(canonical) = canonical.as_ref() else {
+            return Ok(crate::state::OperationState::Ambiguous);
+        };
+        if crate::canary::record_evm_source_message(store, intent, canonical).is_err() {
+            return Ok(crate::state::OperationState::Ambiguous);
+        }
+    }
+    Ok(match receipt.succeeded {
+        Some(true) => crate::state::OperationState::Confirmed,
+        Some(false) => crate::state::OperationState::Failed,
+        None => crate::state::OperationState::Ambiguous,
+    })
+}
+
 fn recover_stellar_submission(
     store: &RouteStore,
     operation_id: &str,
@@ -2041,6 +2127,7 @@ fn recover_stellar_submission(
     let Some(last) = history.last() else {
         return Ok(None);
     };
+    let operation = journaled_operation(&history)?;
     match last.state {
         crate::state::OperationState::Planned => return Ok(None),
         crate::state::OperationState::Confirmed | crate::state::OperationState::Failed => {
@@ -2112,11 +2199,7 @@ fn recover_stellar_submission(
         }
         status = stellar.transaction_status(transaction_hash)?;
     }
-    let terminal = match status.status.as_str() {
-        "success" => crate::state::OperationState::Confirmed,
-        "failed" => crate::state::OperationState::Failed,
-        _ => crate::state::OperationState::Ambiguous,
-    };
+    let terminal = stellar_terminal_state(store, &operation, stellar, &status, transaction_hash)?;
     store.append_operation(
         crate::state::OperationEventV1 {
             operation_id: operation_id.into(),
@@ -2148,6 +2231,7 @@ fn recover_evm_submission(
     let Some(last) = history.last() else {
         return Ok(None);
     };
+    let operation = journaled_operation(&history)?;
     match last.state {
         crate::state::OperationState::Planned => return Ok(None),
         crate::state::OperationState::Confirmed | crate::state::OperationState::Failed => {
@@ -2222,11 +2306,7 @@ fn recover_evm_submission(
         }
         receipt = crate::block_on_result(evm.transaction_receipt(transaction_hash))?;
     }
-    let terminal = match receipt.as_ref().and_then(|receipt| receipt.succeeded) {
-        Some(true) => crate::state::OperationState::Confirmed,
-        Some(false) => crate::state::OperationState::Failed,
-        None => crate::state::OperationState::Ambiguous,
-    };
+    let terminal = evm_terminal_state(store, &operation, evm, receipt.as_ref())?;
     store.append_operation(
         crate::state::OperationEventV1 {
             operation_id: operation_id.into(),
@@ -2251,6 +2331,7 @@ fn execute_stellar_operation(
     state_path: &Path,
     operation: &OperationV1,
     effect: ChainEffectArgs,
+    allow_additional_obligation: bool,
 ) -> Result<CommandData> {
     use crate::stellar::StellarChain as _;
     use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -2282,7 +2363,10 @@ fn execute_stellar_operation(
     }
     let operation_id = canonical_sha256(operation)?;
     let binding = store.derive_phase_a_binding(Vm::Stellar, sender)?;
-    let operations_root = state_path.parent().unwrap_or_else(|| Path::new("."));
+    let operations_root = effect
+        .operation_store_root
+        .as_deref()
+        .ok_or_else(|| Error::InvalidInput("execution requires --operation-store-root".into()))?;
     let guard = store.acquire_mutation(&binding, operations_root, &operation_id)?;
     let stellar = crate::stellar::HttpStellarChain::new(&rpc_url)?.with_artifact_root(state_path);
     if let Some(result) = recover_stellar_submission(guard.store(), &operation_id, &stellar)? {
@@ -2300,7 +2384,15 @@ fn execute_stellar_operation(
         )?;
     }
     let evm = crate::evm::HttpEvmChain::new(&evm_rpc_url)?.with_artifact_root(state_path);
+    crate::canary::revalidate_locked_send(
+        state_path,
+        operation,
+        allow_additional_obligation,
+        &stellar,
+        &evm,
+    )?;
     let plan = crate::governance::build_executable_plan(guard.state(), operation, &stellar, &evm)?;
+    crate::canary::verify_plan_source_slot(operation, &plan)?;
     if let crate::domain::OperationV1::SendLeg { intent, .. } = operation {
         crate::canary::verify_stellar_plan_fee_ceiling(
             intent,
@@ -2391,11 +2483,13 @@ fn execute_stellar_operation(
             return Err(error);
         }
     };
-    let terminal = match status.status.as_str() {
-        "success" => crate::state::OperationState::Confirmed,
-        "failed" => crate::state::OperationState::Failed,
-        _ => crate::state::OperationState::Ambiguous,
-    };
+    let terminal = stellar_terminal_state(
+        guard.store(),
+        operation,
+        &stellar,
+        &status,
+        &transaction_hash,
+    )?;
     guard.store().append_operation(
         crate::state::OperationEventV1 {
             operation_id,
@@ -2419,6 +2513,7 @@ fn execute_evm_operation(
     state_path: &Path,
     operation: &OperationV1,
     effect: ChainEffectArgs,
+    allow_additional_obligation: bool,
 ) -> Result<CommandData> {
     use crate::evm::EvmChain as _;
     use sha2::Digest as _;
@@ -2449,7 +2544,10 @@ fn execute_evm_operation(
     let signer = crate::evm::keystore_signer(keystore, &password, sender_address)?;
     let operation_id = canonical_sha256(operation)?;
     let binding = store.derive_phase_a_binding(Vm::Evm, sender)?;
-    let operations_root = state_path.parent().unwrap_or_else(|| Path::new("."));
+    let operations_root = effect
+        .operation_store_root
+        .as_deref()
+        .ok_or_else(|| Error::InvalidInput("execution requires --operation-store-root".into()))?;
     let guard = store.acquire_mutation(&binding, operations_root, &operation_id)?;
     let evm = crate::evm::HttpEvmChain::new(&rpc_url)?.with_artifact_root(state_path);
     if let Some(result) = recover_evm_submission(guard.store(), &operation_id, &evm)? {
@@ -2468,7 +2566,15 @@ fn execute_evm_operation(
     }
     let stellar =
         crate::stellar::HttpStellarChain::new(&stellar_rpc_url)?.with_artifact_root(state_path);
+    crate::canary::revalidate_locked_send(
+        state_path,
+        operation,
+        allow_additional_obligation,
+        &stellar,
+        &evm,
+    )?;
     let plan = crate::governance::build_executable_plan(guard.state(), operation, &stellar, &evm)?;
+    crate::canary::verify_plan_source_slot(operation, &plan)?;
     if let crate::domain::OperationV1::SendLeg { intent, .. } = operation {
         crate::canary::verify_evm_plan_fee_ceiling(
             intent,
@@ -2549,11 +2655,7 @@ fn execute_evm_operation(
             return Err(error);
         }
     };
-    let terminal = match receipt.as_ref().and_then(|receipt| receipt.succeeded) {
-        Some(true) => crate::state::OperationState::Confirmed,
-        Some(false) => crate::state::OperationState::Failed,
-        None => crate::state::OperationState::Ambiguous,
-    };
+    let terminal = evm_terminal_state(guard.store(), operation, &evm, receipt.as_ref())?;
     guard.store().append_operation(
         crate::state::OperationEventV1 {
             operation_id,
@@ -2974,7 +3076,8 @@ fn leg(args: LegArgs, rpc: &RpcArgs) -> Result<CommandData> {
                 (Some(stellar_url), Some(evm_url)) => {
                     let stellar = crate::stellar::HttpStellarChain::new(&stellar_url)?
                         .with_artifact_root(&args.state);
-                    let evm = crate::evm::HttpEvmChain::new(&evm_url)?.with_artifact_root(&args.state);
+                    let evm =
+                        crate::evm::HttpEvmChain::new(&evm_url)?.with_artifact_root(&args.state);
                     crate::canary::send_operation_live(
                         &args.state,
                         &args.intent,
@@ -2989,7 +3092,12 @@ fn leg(args: LegArgs, rpc: &RpcArgs) -> Result<CommandData> {
                     args.allow_additional_obligation,
                 )?,
             };
-            chain_effect(&args.state, &operation, args.effect)
+            chain_effect_with_send_policy(
+                &args.state,
+                &operation,
+                args.effect,
+                args.allow_additional_obligation,
+            )
         }
     }
 }

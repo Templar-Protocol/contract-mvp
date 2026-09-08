@@ -5,8 +5,6 @@ use std::collections::BTreeMap;
 
 use templar_oft_bridge_cli::error::{Error, Result};
 
-
-
 use std::path::{Path, PathBuf};
 
 use templar_oft_bridge_cli::domain::{
@@ -99,7 +97,10 @@ fn canary_config() -> BTreeMap<String, serde_json::Value> {
         ),
         ("fee_bps:stellar_to_evm".into(), serde_json::json!("25")),
         ("fee_bps:evm_to_stellar".into(), serde_json::json!("10")),
-        ("canary:finality_policy".into(), serde_json::json!("confirmed")),
+        (
+            "canary:finality_policy".into(),
+            serde_json::json!("confirmed"),
+        ),
         (
             "canary:max_outstanding_obligation_raw".into(),
             serde_json::json!("10000000"),
@@ -652,6 +653,25 @@ fn additional_obligation_allowed_only_within_recorded_cap() {
 }
 
 #[test]
+fn first_obligation_must_fit_recorded_cap() {
+    let (_directory, root) = route();
+    let store = RouteStore::open(&root).expect("open");
+    let mut state = store.load_state().expect("state");
+    for config in [&mut state.requested_config, &mut state.effective_config] {
+        config.insert(
+            "canary:max_outstanding_obligation_raw".into(),
+            serde_json::json!("50000"),
+        );
+    }
+    store.save_state(&state).expect("save");
+    let (_out_dir, out) = quote_intent(&root, Direction::StellarToEvm, 100_000, EVM_DESTINATION);
+    let error = templar_oft_bridge_cli::canary::send_operation(&root, &out, false)
+        .expect_err("first obligation above cap must reject");
+    assert!(matches!(error, Error::Policy(_)));
+    assert!(error.to_string().contains("exceeds the recorded cap"));
+}
+
+#[test]
 fn quote_refuses_missing_obligation_cap_evidence() {
     let (_directory, root) = route();
     let store = RouteStore::open(&root).expect("open");
@@ -786,11 +806,14 @@ impl templar_oft_bridge_cli::stellar::StellarChain for FakeObservedStellar {
         &self,
         _transaction_hash: &str,
     ) -> Result<templar_oft_bridge_cli::stellar::StellarTransactionStatusV1> {
-        Ok(templar_oft_bridge_cli::stellar::StellarTransactionStatusV1 {
-            status: "in_flight".into(),
-            ledger: None,
-            envelope_xdr: None,
-        })
+        Ok(
+            templar_oft_bridge_cli::stellar::StellarTransactionStatusV1 {
+                status: "in_flight".into(),
+                ledger: None,
+                envelope_xdr: None,
+                contract_events: Vec::new(),
+            },
+        )
     }
 }
 
@@ -832,10 +855,7 @@ impl templar_oft_bridge_cli::evm::EvmChain for FakeObservedEvm {
     async fn account_nonce(&self, _address: alloy::primitives::Address) -> Result<u64> {
         Ok(self.nonce)
     }
-    async fn safe_state(
-        &self,
-        _safe: alloy::primitives::Address,
-    ) -> Result<Option<(u32, String)>> {
+    async fn safe_state(&self, _safe: alloy::primitives::Address) -> Result<Option<(u32, String)>> {
         Ok(None)
     }
     async fn latest_block(&self) -> Result<u64> {
@@ -877,7 +897,10 @@ fn obs_stellar(ledger: u32, sequence: &str, sender: &str, lockbox: &str) -> Fake
                 sender.to_string(),
             ),
             (
-                (FAKE_STELLAR_TOKEN.to_string(), common::STELLAR_OFT.to_string()),
+                (
+                    FAKE_STELLAR_TOKEN.to_string(),
+                    common::STELLAR_OFT.to_string(),
+                ),
                 lockbox.to_string(),
             ),
         ]),
@@ -912,8 +935,14 @@ fn quote_live_records_observations_without_plan_or_nonce_reservation() {
     let (_directory, root) = live_route();
     let stellar = obs_stellar(4_310, "41", "900000", "2000000");
     let evm = obs_evm(420, 7, "2000000");
-    let (_out_dir, out) =
-        quote_live_intent(&root, Direction::StellarToEvm, 100_000, EVM_DESTINATION, &stellar, &evm);
+    let (_out_dir, out) = quote_live_intent(
+        &root,
+        Direction::StellarToEvm,
+        100_000,
+        EVM_DESTINATION,
+        &stellar,
+        &evm,
+    );
     let intent: LegIntentV1 = templar_oft_bridge_cli::state::read_json(&out).expect("intent");
     assert_eq!(intent.quote_source_ledger, Some(4_310));
     assert_eq!(intent.quote_source_block, None);
@@ -926,12 +955,86 @@ fn quote_live_records_observations_without_plan_or_nonce_reservation() {
         intent.fee_ceiling,
         Some(templar_oft_bridge_cli::domain::LegFeeCeilingV1::Stellar { .. })
     ));
-    assert_eq!(intent.finality_policy.as_deref(), Some("confirmed"));
+    assert_eq!(
+        intent.finality_policy,
+        Some(templar_oft_bridge_cli::domain::LegFinalityPolicyV1::Confirmed)
+    );
     assert_eq!(intent.peer_snapshot_sha256.len(), 64);
     let obligation = intent
         .additional_obligation
         .expect("additional-obligation policy");
     assert_eq!(obligation.outstanding_raw, "0");
+}
+
+#[test]
+fn evm_send_requires_successor_block_and_canonical_receipt() {
+    let (_directory, root) = live_route();
+    let (_out_dir, out) =
+        quote_intent(&root, Direction::EvmToStellar, 100_000, STELLAR_DESTINATION);
+    let intent: LegIntentV1 = templar_oft_bridge_cli::state::read_json(&out).expect("intent");
+    let receipt = templar_oft_bridge_cli::evm::EvmReceiptV1 {
+        transaction_hash: "0x1234".into(),
+        block_number: Some(420),
+        succeeded: Some(true),
+        logs: Vec::new(),
+        raw: serde_json::json!({"blockHash": "0xaaaa"}),
+    };
+
+    assert!(!templar_oft_bridge_cli::canary::evm_source_finalized(
+        &intent,
+        &receipt,
+        420,
+        Some(&receipt),
+    )
+    .expect("same-block receipt"));
+    assert!(templar_oft_bridge_cli::canary::evm_source_finalized(
+        &intent,
+        &receipt,
+        421,
+        Some(&receipt),
+    )
+    .expect("canonical successor-block receipt"));
+
+    let mut reorged = receipt.clone();
+    reorged.raw = serde_json::json!({"blockHash": "0xbbbb"});
+    assert!(!templar_oft_bridge_cli::canary::evm_source_finalized(
+        &intent,
+        &receipt,
+        421,
+        Some(&reorged),
+    )
+    .expect("reorged receipt"));
+}
+
+#[test]
+fn stellar_send_requires_successor_ledger_and_stable_inclusion() {
+    let (_directory, root) = live_route();
+    let (_out_dir, out) = quote_intent(&root, Direction::StellarToEvm, 100_000, EVM_DESTINATION);
+    let intent: LegIntentV1 = templar_oft_bridge_cli::state::read_json(&out).expect("intent");
+    let status = templar_oft_bridge_cli::stellar::StellarTransactionStatusV1 {
+        status: "success".into(),
+        ledger: Some(4_310),
+        envelope_xdr: None,
+        contract_events: Vec::new(),
+    };
+
+    assert!(!templar_oft_bridge_cli::canary::stellar_source_finalized(
+        &intent, &status, 4_310, &status,
+    )
+    .expect("same-ledger status"));
+    assert!(templar_oft_bridge_cli::canary::stellar_source_finalized(
+        &intent, &status, 4_311, &status,
+    )
+    .expect("stable successor-ledger status"));
+
+    let displaced = templar_oft_bridge_cli::stellar::StellarTransactionStatusV1 {
+        ledger: Some(4_311),
+        ..status.clone()
+    };
+    assert!(!templar_oft_bridge_cli::canary::stellar_source_finalized(
+        &intent, &status, 4_312, &displaced,
+    )
+    .expect("changed inclusion ledger"));
 }
 
 #[test]
@@ -946,8 +1049,14 @@ fn reverse_live_quote_binds_evm_block_nonce_and_supply() {
             (selector("balanceOf(address)"), u256_word("500000")),
         ]),
     };
-    let (_out_dir, out) =
-        quote_live_intent(&root, Direction::EvmToStellar, 100_000, STELLAR_DESTINATION, &stellar, &evm);
+    let (_out_dir, out) = quote_live_intent(
+        &root,
+        Direction::EvmToStellar,
+        100_000,
+        STELLAR_DESTINATION,
+        &stellar,
+        &evm,
+    );
     let intent: LegIntentV1 = templar_oft_bridge_cli::state::read_json(&out).expect("intent");
     assert_eq!(intent.quote_source_ledger, None);
     assert_eq!(intent.quote_source_block, Some(420));
@@ -967,8 +1076,14 @@ fn send_live_accepts_matching_observations() {
     let (_directory, root) = live_route();
     let stellar = obs_stellar(4_310, "41", "900000", "2000000");
     let evm = obs_evm(420, 7, "2000000");
-    let (_out_dir, out) =
-        quote_live_intent(&root, Direction::StellarToEvm, 100_000, EVM_DESTINATION, &stellar, &evm);
+    let (_out_dir, out) = quote_live_intent(
+        &root,
+        Direction::StellarToEvm,
+        100_000,
+        EVM_DESTINATION,
+        &stellar,
+        &evm,
+    );
     templar_oft_bridge_cli::canary::send_operation_live(&root, &out, false, &stellar, &evm)
         .expect("identical live observations must not drift");
 }
@@ -978,14 +1093,20 @@ fn send_live_rejects_stellar_ledger_drift_before_signing() {
     let (_directory, root) = live_route();
     let stellar = obs_stellar(4_310, "41", "900000", "2000000");
     let evm = obs_evm(420, 7, "2000000");
-    let (_out_dir, out) =
-        quote_live_intent(&root, Direction::StellarToEvm, 100_000, EVM_DESTINATION, &stellar, &evm);
+    let (_out_dir, out) = quote_live_intent(
+        &root,
+        Direction::StellarToEvm,
+        100_000,
+        EVM_DESTINATION,
+        &stellar,
+        &evm,
+    );
     let drifted = obs_stellar(4_311, "41", "900000", "2000000");
-    let error = templar_oft_bridge_cli::canary::send_operation_live(&root, &out, false, &drifted, &evm)
-        .expect_err("source ledger drift must refuse before signing");
+    let error =
+        templar_oft_bridge_cli::canary::send_operation_live(&root, &out, false, &drifted, &evm)
+            .expect_err("source ledger drift must refuse before signing");
     assert!(
-        matches!(error, Error::Conflict(_))
-            && error.to_string().contains("quote_source_ledger")
+        matches!(error, Error::Conflict(_)) && error.to_string().contains("quote_source_ledger")
     );
 }
 
@@ -994,14 +1115,19 @@ fn send_live_rejects_stellar_lockbox_drift_before_signing() {
     let (_directory, root) = live_route();
     let stellar = obs_stellar(4_310, "41", "900000", "2000000");
     let evm = obs_evm(420, 7, "2000000");
-    let (_out_dir, out) =
-        quote_live_intent(&root, Direction::StellarToEvm, 100_000, EVM_DESTINATION, &stellar, &evm);
-    let drifted = obs_stellar(4_310, "41", "900000", "2000001");
-    let error = templar_oft_bridge_cli::canary::send_operation_live(&root, &out, false, &drifted, &evm)
-        .expect_err("lockbox reserve drift must refuse before signing");
-    assert!(
-        matches!(error, Error::Conflict(_)) && error.to_string().contains("lockbox_raw")
+    let (_out_dir, out) = quote_live_intent(
+        &root,
+        Direction::StellarToEvm,
+        100_000,
+        EVM_DESTINATION,
+        &stellar,
+        &evm,
     );
+    let drifted = obs_stellar(4_310, "41", "900000", "2000001");
+    let error =
+        templar_oft_bridge_cli::canary::send_operation_live(&root, &out, false, &drifted, &evm)
+            .expect_err("lockbox reserve drift must refuse before signing");
+    assert!(matches!(error, Error::Conflict(_)) && error.to_string().contains("lockbox_raw"));
 }
 
 #[test]
@@ -1009,11 +1135,18 @@ fn send_live_rejects_stellar_sequence_drift_before_signing() {
     let (_directory, root) = live_route();
     let stellar = obs_stellar(4_310, "41", "900000", "2000000");
     let evm = obs_evm(420, 7, "2000000");
-    let (_out_dir, out) =
-        quote_live_intent(&root, Direction::StellarToEvm, 100_000, EVM_DESTINATION, &stellar, &evm);
+    let (_out_dir, out) = quote_live_intent(
+        &root,
+        Direction::StellarToEvm,
+        100_000,
+        EVM_DESTINATION,
+        &stellar,
+        &evm,
+    );
     let drifted = obs_stellar(4_310, "42", "900000", "2000000");
-    let error = templar_oft_bridge_cli::canary::send_operation_live(&root, &out, false, &drifted, &evm)
-        .expect_err("source sequence drift must refuse before signing");
+    let error =
+        templar_oft_bridge_cli::canary::send_operation_live(&root, &out, false, &drifted, &evm)
+            .expect_err("source sequence drift must refuse before signing");
     assert!(
         matches!(error, Error::Conflict(_))
             && error.to_string().contains("observed_sequence_nonce")
@@ -1032,15 +1165,22 @@ fn send_live_rejects_evm_block_drift_before_signing() {
             (selector("balanceOf(address)"), u256_word("500000")),
         ]),
     };
-    let (_out_dir, out) =
-        quote_live_intent(&root, Direction::EvmToStellar, 100_000, STELLAR_DESTINATION, &stellar, &evm);
+    let (_out_dir, out) = quote_live_intent(
+        &root,
+        Direction::EvmToStellar,
+        100_000,
+        STELLAR_DESTINATION,
+        &stellar,
+        &evm,
+    );
     let drifted = FakeObservedEvm {
         block: 421,
         nonce: 7,
         words: evm.words.clone(),
     };
-    let error = templar_oft_bridge_cli::canary::send_operation_live(&root, &out, false, &stellar, &drifted)
-        .expect_err("source block drift must refuse before signing");
+    let error =
+        templar_oft_bridge_cli::canary::send_operation_live(&root, &out, false, &stellar, &drifted)
+            .expect_err("source block drift must refuse before signing");
     assert!(
         matches!(error, Error::Conflict(_)) && error.to_string().contains("quote_source_block")
     );
@@ -1058,8 +1198,14 @@ fn send_live_rejects_evm_supply_drift_before_signing() {
             (selector("balanceOf(address)"), u256_word("500000")),
         ]),
     };
-    let (_out_dir, out) =
-        quote_live_intent(&root, Direction::EvmToStellar, 100_000, STELLAR_DESTINATION, &stellar, &evm);
+    let (_out_dir, out) = quote_live_intent(
+        &root,
+        Direction::EvmToStellar,
+        100_000,
+        STELLAR_DESTINATION,
+        &stellar,
+        &evm,
+    );
     let drifted = FakeObservedEvm {
         block: 420,
         nonce: 7,
@@ -1068,11 +1214,10 @@ fn send_live_rejects_evm_supply_drift_before_signing() {
             (selector("balanceOf(address)"), u256_word("500000")),
         ]),
     };
-    let error = templar_oft_bridge_cli::canary::send_operation_live(&root, &out, false, &stellar, &drifted)
-        .expect_err("evm supply drift must refuse before signing");
-    assert!(
-        matches!(error, Error::Conflict(_)) && error.to_string().contains("evm_supply_raw")
-    );
+    let error =
+        templar_oft_bridge_cli::canary::send_operation_live(&root, &out, false, &stellar, &drifted)
+            .expect_err("evm supply drift must refuse before signing");
+    assert!(matches!(error, Error::Conflict(_)) && error.to_string().contains("evm_supply_raw"));
 }
 
 #[test]
@@ -1081,11 +1226,11 @@ fn send_live_refuses_an_offline_preview_intent() {
     let stellar = obs_stellar(4_310, "41", "900000", "2000000");
     let evm = obs_evm(420, 7, "2000000");
     let (_out_dir, out) = quote_intent(&root, Direction::StellarToEvm, 100_000, EVM_DESTINATION);
-    let error = templar_oft_bridge_cli::canary::send_operation_live(&root, &out, false, &stellar, &evm)
-        .expect_err("an offline preview intent has no live observations to bind");
+    let error =
+        templar_oft_bridge_cli::canary::send_operation_live(&root, &out, false, &stellar, &evm)
+            .expect_err("an offline preview intent has no live observations to bind");
     assert!(
-        matches!(error, Error::Conflict(_))
-            && error.to_string().contains("quote_source_ledger")
+        matches!(error, Error::Conflict(_)) && error.to_string().contains("quote_source_ledger")
     );
 }
 
@@ -1098,12 +1243,17 @@ fn stellar_plan_fee_ceiling_refuses_over_budget_envelope() {
     };
     use stellar_baselib::transaction::TransactionBehavior as _;
 
-
     let (_directory, root) = live_route();
     let stellar = obs_stellar(4_310, "41", "900000", "2000000");
     let evm = obs_evm(420, 7, "2000000");
-    let (_out_dir, out) =
-        quote_live_intent(&root, Direction::StellarToEvm, 100_000, EVM_DESTINATION, &stellar, &evm);
+    let (_out_dir, out) = quote_live_intent(
+        &root,
+        Direction::StellarToEvm,
+        100_000,
+        EVM_DESTINATION,
+        &stellar,
+        &evm,
+    );
     let intent: LegIntentV1 = templar_oft_bridge_cli::state::read_json(&out).expect("intent");
     let mut account = Account::new(STELLAR_ACCOUNT, "41").expect("account");
     let operation = stellar_baselib::operation::Operation::new()
@@ -1135,8 +1285,7 @@ fn stellar_plan_fee_ceiling_refuses_over_budget_envelope() {
     let error = templar_oft_bridge_cli::canary::verify_stellar_plan_fee_ceiling(&intent, &binding)
         .expect_err("over-budget envelope fee must refuse before signing");
     assert!(
-        matches!(error, Error::Policy(_))
-            && error.to_string().contains("resource-fee ceiling")
+        matches!(error, Error::Policy(_)) && error.to_string().contains("resource-fee ceiling")
     );
 }
 
@@ -1152,11 +1301,18 @@ fn evm_plan_fee_ceiling_refuses_over_budget_fee_policy() {
             (selector("balanceOf(address)"), u256_word("500000")),
         ]),
     };
-    let (_out_dir, out) =
-        quote_live_intent(&root, Direction::EvmToStellar, 100_000, STELLAR_DESTINATION, &stellar, &evm);
+    let (_out_dir, out) = quote_live_intent(
+        &root,
+        Direction::EvmToStellar,
+        100_000,
+        STELLAR_DESTINATION,
+        &stellar,
+        &evm,
+    );
     let intent: LegIntentV1 = templar_oft_bridge_cli::state::read_json(&out).expect("intent");
     let binding = templar_oft_bridge_cli::domain::EvmPlanBindingV1 {
         chain_id: "11155111".into(),
+        sender: "0x1111111111111111111111111111111111111111".into(),
         target: FAKE_EVM_TOKEN.into(),
         value: "0".into(),
         nonce: "7".into(),

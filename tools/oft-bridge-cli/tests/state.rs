@@ -1,4 +1,6 @@
 use std::fs;
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use std::collections::BTreeMap;
 use templar_oft_bridge_cli::{
@@ -109,6 +111,7 @@ fn route_lock_excludes_second_writer() {
     let error = store.lock().expect_err("second lock must fail");
     assert!(error.to_string().contains("busy"));
     drop(first);
+    assert!(root.join(".lock").is_file(), "lock inode remains stable");
     store.lock().expect("lock after release");
 }
 
@@ -116,8 +119,10 @@ fn route_lock_excludes_second_writer() {
 fn domain_lock_excludes_second_route_in_same_domain() {
     let directory = tempfile::tempdir().expect("tempdir");
     let operations_root = operations_root(directory.path());
-    let root_a = directory.path().join("route-a");
-    let root_b = directory.path().join("route-b");
+    let root_a = directory.path().join("routes-a/route");
+    let root_b = directory.path().join("routes-b/route");
+    fs::create_dir(directory.path().join("routes-a")).expect("route a parent");
+    fs::create_dir(directory.path().join("routes-b")).expect("route b parent");
     let (store_a, _) = RouteStore::create(&root_a, desired()).expect("create a");
     let (store_b, _) = RouteStore::create(&root_b, desired()).expect("create b");
     let binding_a = store_a
@@ -145,6 +150,36 @@ fn domain_lock_excludes_second_route_in_same_domain() {
 }
 
 #[test]
+fn evm_authority_domain_canonicalizes_address_case() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let operations_root = operations_root(directory.path());
+    let root_a = directory.path().join("route-a");
+    let root_b = directory.path().join("route-b");
+    let (store_a, _) = RouteStore::create(&root_a, desired()).expect("create a");
+    let (store_b, _) = RouteStore::create(&root_b, desired()).expect("create b");
+    let lower = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd";
+    let mixed = "0xAbCdEfAbCdEfAbCdEfAbCdEfAbCdEfAbCdEfAbCd";
+    let binding_a = store_a
+        .derive_phase_a_binding(Vm::Evm, lower)
+        .expect("lowercase binding");
+    let binding_b = store_b
+        .derive_phase_a_binding(Vm::Evm, mixed)
+        .expect("mixed-case binding");
+    assert_eq!(binding_a.sender(), lower);
+    assert_eq!(binding_b.sender(), lower);
+    assert_eq!(binding_a.domain_sha256(), binding_b.domain_sha256());
+
+    let guard = store_a
+        .acquire_mutation(&binding_a, &operations_root, "op-a")
+        .expect("first route acquires canonical domain");
+    let error = store_b
+        .acquire_mutation(&binding_b, &operations_root, "op-b")
+        .expect_err("alternate address spelling cannot bypass domain lock");
+    assert!(error.to_string().contains("busy"));
+    drop(guard);
+}
+
+#[test]
 fn stale_phase_a_binding_is_rejected_and_locks_released() {
     let directory = tempfile::tempdir().expect("tempdir");
     let operations_root = operations_root(directory.path());
@@ -162,13 +197,13 @@ fn stale_phase_a_binding_is_rejected_and_locks_released() {
         .acquire_mutation(&binding, &operations_root, "test-operation")
         .expect_err("stale binding must be rejected");
     assert!(error.to_string().contains("stale"));
-    assert!(!root.join(".lock").exists(), "route lock released on stale");
+    assert!(root.join(".lock").is_file(), "route lock inode persists");
     assert!(
-        !operations_root
+        operations_root
             .join(".authority")
             .join(format!("{}.lock", binding.domain_sha256()))
-            .exists(),
-        "authority-domain lock released on stale"
+            .is_file(),
+        "authority-domain lock inode persists"
     );
     let fresh = store
         .derive_phase_a_binding(Vm::Stellar, SENDER)
@@ -176,6 +211,72 @@ fn stale_phase_a_binding_is_rejected_and_locks_released() {
     store
         .acquire_mutation(&fresh, &operations_root, "test-operation")
         .expect("restart with a fresh binding succeeds");
+}
+
+#[test]
+fn advisory_lock_crash_child() {
+    let Ok(root) = std::env::var("TMPLR_LOCK_CRASH_ROUTE") else {
+        return;
+    };
+    let operations_root = std::env::var("TMPLR_LOCK_CRASH_OPERATIONS").expect("operations root");
+    let marker = std::env::var("TMPLR_LOCK_CRASH_MARKER").expect("marker");
+    let store = RouteStore::open(std::path::Path::new(&root)).expect("open child route");
+    let binding = store
+        .derive_phase_a_binding(Vm::Evm, EVM_SENDER)
+        .expect("child binding");
+    let _guard = store
+        .acquire_mutation(&binding, std::path::Path::new(&operations_root), "crash-op")
+        .expect("child guard");
+    fs::write(marker, b"locked").expect("ready marker");
+    loop {
+        std::thread::park();
+    }
+}
+
+#[test]
+fn process_death_releases_persistent_route_and_authority_locks() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let operations_root = operations_root(directory.path());
+    let root = directory.path().join("route");
+    let marker = directory.path().join("child-ready");
+    let (store, _) = RouteStore::create(&root, desired()).expect("create route");
+    let binding = store
+        .derive_phase_a_binding(Vm::Evm, EVM_SENDER)
+        .expect("binding");
+
+    let mut child = Command::new(std::env::current_exe().expect("test executable"))
+        .args(["--exact", "advisory_lock_crash_child", "--nocapture"])
+        .env("TMPLR_LOCK_CRASH_ROUTE", &root)
+        .env("TMPLR_LOCK_CRASH_OPERATIONS", &operations_root)
+        .env("TMPLR_LOCK_CRASH_MARKER", &marker)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn lock holder");
+    for _ in 0..200 {
+        if marker.exists() {
+            break;
+        }
+        if child.try_wait().expect("poll child").is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(marker.exists(), "child acquired both locks");
+    child.kill().expect("kill lock holder without running Drop");
+    child.wait().expect("reap lock holder");
+
+    assert!(root.join(".lock").is_file(), "route lock file persists");
+    assert!(
+        operations_root
+            .join(".authority")
+            .join(format!("{}.lock", binding.domain_sha256()))
+            .is_file(),
+        "authority lock file persists"
+    );
+    store
+        .acquire_mutation(&binding, &operations_root, "after-crash")
+        .expect("kernel releases both advisory locks on process death");
 }
 
 #[test]

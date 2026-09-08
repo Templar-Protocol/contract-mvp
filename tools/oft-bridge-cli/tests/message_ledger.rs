@@ -167,6 +167,21 @@ fn message_records_carry_no_secret_material() {
 }
 
 #[test]
+fn source_transaction_is_not_recorded_until_authenticated_message_append() {
+    let (_directory, store) = store();
+    let mut message = record("g1", "1");
+    message.source_transaction = "0xAaBb".into();
+
+    assert!(!store
+        .has_message_for_source_transaction("0xaabb")
+        .expect("empty ledger"));
+    store.append_message(message).expect("authenticated append");
+    assert!(store
+        .has_message_for_source_transaction("0xAABB")
+        .expect("recorded source transaction"));
+}
+
+#[test]
 fn duplicate_source_nonce_or_guid_is_rejected() {
     let (_directory, store1) = store();
     store1.append_message(record("first", "1")).expect("append");

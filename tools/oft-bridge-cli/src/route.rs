@@ -1406,9 +1406,7 @@ pub fn apply_live_readback(
                 })
             };
             let actual_limit = match field(b"limit") {
-                Some(ScVal::I128(parts)) => {
-                    (i128::from(parts.hi) << 64) | i128::from(parts.lo)
-                }
+                Some(ScVal::I128(parts)) => (i128::from(parts.hi) << 64) | i128::from(parts.lo),
                 _ => return Err(Error::Chain("rate limit readback has no i128 limit".into())),
             };
             let actual_window = match field(b"window_seconds") {

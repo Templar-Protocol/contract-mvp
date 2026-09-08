@@ -361,6 +361,10 @@ pub struct StellarTransactionStatusV1 {
     pub status: String,
     pub ledger: Option<u32>,
     pub envelope_xdr: Option<String>,
+    /// Successful contract events decoded from the transaction metadata.
+    /// Source-send finalization authenticates LayerZero packet evidence from
+    /// these events before releasing the authority reservation.
+    pub contract_events: Vec<stellar_baselib::xdr::ContractEvent>,
 }
 pub fn envelope_transaction_hash(envelope_xdr: &str, network_passphrase: &str) -> Result<String> {
     use stellar_baselib::transaction::{Transaction, TransactionBehavior as _};
@@ -1133,10 +1137,15 @@ impl StellarChain for HttpStellarChain {
             .map_err(|error| {
                 Error::Chain(format!("transaction envelope encode failed: {error}"))
             })?;
+        let contract_events = response
+            .to_events()
+            .map(|(_, operation_events)| operation_events.into_iter().flatten().collect())
+            .unwrap_or_default();
         Ok(StellarTransactionStatusV1 {
             status: status.into(),
             ledger: response.ledger,
             envelope_xdr,
+            contract_events,
         })
     }
 }
