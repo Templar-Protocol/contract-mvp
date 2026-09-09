@@ -102,11 +102,13 @@ Using available view functions:
   near contract call-function as-read-only <market-address> get_borrow_asset_metrics json-args {} network-config mainnet now
   ```
 
-- **Supplier Yield Availability**: The yield leg of a supplier withdrawal is
-  bounded by `min(accrued_yield, paid_to_fees)`. The motivating minimum gate is
-  `min(accrued_yield, paid_to_fees) >= supply_withdrawal_range.minimum`; existing
-  eligibility checks still apply, and other withdrawals can consume the shared
-  pool before execution.
+- **Supplier Yield Availability**: `min(accrued_yield, paid_to_fees)` is the
+  largest yield-only request that can be paid without consuming principal. Such
+  a request meets the configured minimum only when
+  `min(accrued_yield, paid_to_fees) >= supply_withdrawal_range.minimum`. This is
+  not a general withdrawal-eligibility check: principal may cover the remainder
+  of a larger request. Existing eligibility checks still apply, and other
+  withdrawals can consume the shared pool before execution.
 
 - **Current Interest Rate**: Monitor current rate for supply positions
   ```bash
