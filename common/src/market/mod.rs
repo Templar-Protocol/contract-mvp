@@ -26,6 +26,11 @@ pub struct BorrowAssetMetrics {
     pub deposited_active: BorrowAssetAmount,
     pub deposited_incoming: HashMap<u32, BorrowAssetAmount>,
     pub borrowed: BorrowAssetAmount,
+    /// Repaid interest and fees available to pay supplier yield. Caps the
+    /// yield leg of every withdrawal and is shared market-wide,
+    /// first-come-first-served.
+    #[serde(default)]
+    pub paid_to_fees: BorrowAssetAmount,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -142,6 +147,19 @@ mod tests {
         parsed
     }
 
+    fn borrow_asset_metrics_json(paid_to_fees: Option<Value>) -> Value {
+        let mut metrics = json!({
+            "available": "90",
+            "deposited_active": "100",
+            "deposited_incoming": { "7": "10" },
+            "borrowed": "10",
+        });
+        if let Some(paid_to_fees) = paid_to_fees {
+            metrics["paid_to_fees"] = paid_to_fees;
+        }
+        metrics
+    }
+
     #[test]
     fn deposit_msg_supply() {
         let msg = roundtrip(&json!("Supply"));
@@ -197,5 +215,45 @@ mod tests {
             panic!("expected Liquidate, got {msg:?}");
         };
         assert_eq!(*amount, None);
+    }
+
+    #[test]
+    fn borrow_asset_metrics_legacy_json() {
+        let metrics: BorrowAssetMetrics =
+            serde_json::from_value(borrow_asset_metrics_json(None)).unwrap();
+
+        assert_eq!(u128::from(metrics.available), 90);
+        assert_eq!(u128::from(metrics.deposited_active), 100);
+        assert_eq!(u128::from(metrics.deposited_incoming[&7]), 10);
+        assert_eq!(u128::from(metrics.borrowed), 10);
+        assert!(metrics.paid_to_fees.is_zero());
+    }
+
+    #[test]
+    fn borrow_asset_metrics_paid_to_fees_json() {
+        for expected_paid_to_fees in [0, u128::MAX] {
+            let paid_to_fees = expected_paid_to_fees.to_string();
+            let metrics: BorrowAssetMetrics =
+                serde_json::from_value(borrow_asset_metrics_json(Some(json!(paid_to_fees))))
+                    .unwrap();
+
+            assert_eq!(u128::from(metrics.paid_to_fees), expected_paid_to_fees);
+            assert_eq!(
+                serde_json::to_value(&metrics).unwrap()["paid_to_fees"],
+                paid_to_fees,
+            );
+        }
+    }
+
+    #[test]
+    fn borrow_asset_metrics_rejects_malformed_paid_to_fees() {
+        for paid_to_fees in [Value::Null, json!("not-an-amount")] {
+            assert!(
+                serde_json::from_value::<BorrowAssetMetrics>(borrow_asset_metrics_json(Some(
+                    paid_to_fees
+                ),))
+                .is_err()
+            );
+        }
     }
 }
