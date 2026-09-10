@@ -8,10 +8,7 @@ use near_sdk::Gas;
 
 use templar_gateway_types::ProposalEncoding;
 
-use super::{
-    parse_create_proposal, parse_governance, try_parse_governance, with_cleared_credential_env,
-    CREDS,
-};
+use super::{parse_create_proposal, parse_governance, try_parse_governance, CREDS};
 use crate::cli::{Cli, Command};
 use crate::commands::{
     proxy_oracle::{ProxyOracleGovernanceNs, ProxyOracleNs},
@@ -654,49 +651,40 @@ fn execute_proposal_when_ready_flag() {
 
 #[test]
 fn governance_write_commands_accept_print_mode() {
-    let (execute, create) = with_cleared_credential_env(|| {
-        (
-            try_parse_governance([
-                "execute-proposal",
-                "--governance-id",
-                "gov.testnet",
-                "--id",
-                "2",
-                "--signer-id",
-                "dao.near",
-                "--print",
-                "sputnik",
-            ]),
-            try_parse_governance([
-                "create-proposal",
-                "--governance-id",
-                "gov.testnet",
-                "--id",
-                "0",
-                "--signer-id",
-                "dao.near",
-                "--print",
-                "json",
-                "oracle",
-                "call",
-                "--method",
-                "own_accept_owner",
-                "--deposit",
-                "1 yoctoNEAR",
-            ]),
-        )
-    });
-
-    let ProxyOracleGovernanceNs::ExecuteProposal(execute) =
-        execute.expect("immediate execution should support planning")
-    else {
+    let ProxyOracleGovernanceNs::ExecuteProposal(execute) = try_parse_governance([
+        "execute-proposal",
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "2",
+        "--signer-id",
+        "dao.near",
+        "--print",
+        "sputnik",
+    ])
+    .expect("immediate execution should support planning") else {
         panic!("expected execute-proposal");
     };
     assert_eq!(execute.signer.print(), Some(PrintFormat::Sputnik));
 
-    let ProxyOracleGovernanceNs::CreateProposal(create) =
-        create.expect("single-write proposal creation should support planning")
-    else {
+    let ProxyOracleGovernanceNs::CreateProposal(create) = try_parse_governance([
+        "create-proposal",
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "0",
+        "--signer-id",
+        "dao.near",
+        "--print",
+        "json",
+        "oracle",
+        "call",
+        "--method",
+        "own_accept_owner",
+        "--deposit",
+        "1 yoctoNEAR",
+    ])
+    .expect("single-write proposal creation should support planning") else {
         panic!("expected create-proposal");
     };
     assert_eq!(create.signer.print(), Some(PrintFormat::Json));
@@ -704,40 +692,36 @@ fn governance_write_commands_accept_print_mode() {
 
 #[test]
 fn proposal_orchestration_flags_conflict_with_print() {
-    let (execute, create) = with_cleared_credential_env(|| {
-        (
-            try_parse_governance([
-                "execute-proposal",
-                "--governance-id",
-                "gov.testnet",
-                "--id",
-                "2",
-                "--when-ready",
-                "--signer-id",
-                "dao.near",
-                "--print",
-                "json",
-            ]),
-            try_parse_governance([
-                "create-proposal",
-                "--governance-id",
-                "gov.testnet",
-                "--id",
-                "0",
-                "--execute-when-ready",
-                "--signer-id",
-                "dao.near",
-                "--print",
-                "json",
-                "oracle",
-                "call",
-                "--method",
-                "own_accept_owner",
-                "--deposit",
-                "1 yoctoNEAR",
-            ]),
-        )
-    });
+    let execute = try_parse_governance([
+        "execute-proposal",
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "2",
+        "--when-ready",
+        "--signer-id",
+        "dao.near",
+        "--print",
+        "json",
+    ]);
+    let create = try_parse_governance([
+        "create-proposal",
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "0",
+        "--execute-when-ready",
+        "--signer-id",
+        "dao.near",
+        "--print",
+        "json",
+        "oracle",
+        "call",
+        "--method",
+        "own_accept_owner",
+        "--deposit",
+        "1 yoctoNEAR",
+    ]);
 
     assert_eq!(
         execute
