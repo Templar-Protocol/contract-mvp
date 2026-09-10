@@ -365,12 +365,20 @@ impl MarketExternalInterface for Contract {
             templar_common::panic_with_message("Yield record does not exist");
         };
 
-        let amount = amount.unwrap_or_else(|| yield_record.get_total());
+        let available = yield_record.get_total();
+        let amount = amount.unwrap_or(available);
+        require!(
+            amount <= available,
+            "Attempt to withdraw more than accumulated static yield",
+        );
 
         yield_record.remove(amount);
 
         self.static_yield.insert(&predecessor, &yield_record);
-        self.borrow_asset_balance -= amount;
+        self.borrow_asset_balance = self.borrow_asset_balance.unwrap_sub(
+            amount,
+            "Invariant violation: static yield withdrawal exceeds market borrow asset balance",
+        );
 
         self.configuration
             .borrow_asset

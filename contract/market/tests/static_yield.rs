@@ -8,7 +8,7 @@ use near_token::NearToken;
 use rstest::rstest;
 use templar_common::{dec, interest_rate_strategy::InterestRateStrategy, market::YieldWeights};
 use templar_gateway_testing::{harness, DeployedMarket, SandboxHarness};
-use templar_gateway_types::ManagedAccountId;
+use templar_gateway_types::{ManagedAccountId, OperationStatus};
 
 struct Fixture {
     market: DeployedMarket,
@@ -132,6 +132,62 @@ async fn static_yield_success(#[future(awt)] harness: SandboxHarness) -> Result<
             .ft_balance_of(&market.borrow_ft_id, &protocol.0)
             .await?,
         balance_before + accumulated,
+    );
+
+    Ok(())
+}
+
+#[rstest]
+#[tokio::test]
+async fn static_yield_withdrawal_beyond_total_is_rejected(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let Fixture {
+        market,
+        protocol,
+        borrow_user,
+        ..
+    } = setup(&harness).await?;
+
+    harness.borrow(&borrow_user, &market, 1_000_000).await?;
+    harness.fast_forward(200).await?;
+    harness
+        .repay(&borrow_user, &market, 1_200_000, None)
+        .await?;
+    harness
+        .accumulate_static_yield(&protocol, &market, None, None)
+        .await?;
+
+    let accumulated = harness.static_yield_total(&market, &protocol.0).await?;
+    assert_ne!(accumulated, 0);
+    let balance_before = harness
+        .ft_balance_of(&market.borrow_ft_id, &protocol.0)
+        .await?;
+
+    let result = harness
+        .try_withdraw_static_yield(&protocol, &market, Some(accumulated + 1))
+        .await?;
+    assert_eq!(result.operation.status, OperationStatus::Failed);
+    assert!(
+        result
+            .operation
+            .failure_message()
+            .unwrap_or_default()
+            .contains("Attempt to withdraw more than accumulated static yield"),
+        "unexpected failure reason: {:?}",
+        result.operation.failure_message(),
+    );
+    assert_eq!(
+        harness.static_yield_total(&market, &protocol.0).await?,
+        accumulated,
+        "an oversized withdrawal must not reduce static yield",
+    );
+    assert_eq!(
+        harness
+            .ft_balance_of(&market.borrow_ft_id, &protocol.0)
+            .await?,
+        balance_before,
+        "an oversized withdrawal must not transfer tokens",
     );
 
     Ok(())
