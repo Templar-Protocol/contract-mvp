@@ -51,6 +51,17 @@ Regular checks can be performed using:
    # List all deployed markets from registry
    near contract call-function as-read-only v1.tmplr.near list_deployments json-args '{"offset": 0, "count": 100}' network-config mainnet now
    ```
+
+   `paid_to_fees` is the decimal-string amount of repaid interest and fees
+   currently available to pay supplier yield. It is a market-wide,
+   first-come-first-served pool: it is not accrued yield, per-user reserved
+   cash, or a guarantee that a withdrawal will execute. A raw JSON response
+   that omits this field is from a legacy deployment and differs from an
+   upgraded market explicitly reporting `"0"`; Rust consumers deserialize an
+   omitted field as zero for compatibility and therefore lose that distinction.
+   The field appears on live markets only after a released version containing it
+   has been deployed or upgraded.
+
 2. **Oracle Health**: Verify price feed freshness and accuracy
    ```bash
    # Check oracle prices
@@ -90,6 +101,14 @@ Using available view functions:
   # Get borrow asset metrics to calculate utilization (borrowed / available)
   near contract call-function as-read-only <market-address> get_borrow_asset_metrics json-args {} network-config mainnet now
   ```
+
+- **Supplier Yield Availability**: `min(accrued_yield, paid_to_fees)` is the
+  largest yield-only request that can be paid without consuming principal. Such
+  a request meets the configured minimum only when
+  `min(accrued_yield, paid_to_fees) >= supply_withdrawal_range.minimum`. This is
+  not a general withdrawal-eligibility check: principal may cover the remainder
+  of a larger request. Existing eligibility checks still apply, and other
+  withdrawals can consume the shared pool before execution.
 
 - **Current Interest Rate**: Monitor current rate for supply positions
   ```bash

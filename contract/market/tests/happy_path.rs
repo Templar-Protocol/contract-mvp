@@ -156,6 +156,17 @@ async fn test_happy(
         ),
         1100,
     );
+    let near = harness.gateway_client();
+    let market_client = near.market(market.market_id.clone());
+    assert_eq!(
+        u128::from(
+            market_client
+                .get_borrow_asset_metrics(())
+                .await?
+                .paid_to_fees
+        ),
+        0,
+    );
 
     // Repay in full.
     harness.repay(&borrow_user, &market, 1100, None).await?;
@@ -169,6 +180,18 @@ async fn test_happy(
         ),
         0,
     );
+    assert_eq!(
+        u128::from(
+            market_client
+                .get_borrow_asset_metrics(())
+                .await?
+                .paid_to_fees
+        ),
+        100,
+    );
+
+    // Advance beyond the fixture's 1 ms snapshot boundary before harvesting the repaid fee.
+    harness.fast_forward(10).await?;
 
     // The 100 origination fee is split 8/1/1 across supply / protocol / insurance.
 
@@ -213,6 +236,15 @@ async fn test_happy(
             .is_zero(),
         "supply position should carry no yield after withdrawing it all",
     );
+    assert_eq!(
+        u128::from(
+            market_client
+                .get_borrow_asset_metrics(())
+                .await?
+                .paid_to_fees
+        ),
+        20,
+    );
 
     // Withdraw the supplied principal (1100); the position then closes.
     let balance_before = harness
@@ -234,6 +266,15 @@ async fn test_happy(
         .get_supply_position(&market, &supply_user.0)
         .await?
         .is_none());
+    assert_eq!(
+        u128::from(
+            market_client
+                .get_borrow_asset_metrics(())
+                .await?
+                .paid_to_fees
+        ),
+        20,
+    );
 
     // Protocol and insurance static yield: 10 each, paid in the borrow asset and
     // touching only it.

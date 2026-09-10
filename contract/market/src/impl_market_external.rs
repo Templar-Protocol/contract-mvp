@@ -43,6 +43,7 @@ impl MarketExternalInterface for Contract {
                 .map(|incoming| (incoming.activate_at_snapshot_index, incoming.amount))
                 .collect(),
             borrowed: self.borrowed(),
+            paid_to_fees: self.borrow_asset_paid_to_fees,
         }
     }
 
