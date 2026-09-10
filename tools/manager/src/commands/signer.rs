@@ -107,7 +107,6 @@ impl SignerArgs {
 
     /// The warning for a credential the selected mode will not use.
     pub(crate) fn ignored_credential_warning(&self) -> Option<String> {
-        self.secret_key.as_ref()?;
         let mode = match (self.print, self.sign_with) {
             (Some(_), _) => "--print only plans the write, so nothing is signed",
             (None, Some(SigningBackend::Keychain)) => {
@@ -115,10 +114,13 @@ impl SignerArgs {
             }
             (None, None) => return None,
         };
-        Some(format!(
-            "{mode} for {}; the supplied --secret-key/$SECRET_KEY is ignored.",
-            self.signer_id,
-        ))
+        // Presence only: nothing derived from the key itself may reach a log.
+        self.secret_key.is_some().then(|| {
+            format!(
+                "{mode} for {}; the supplied --secret-key/$SECRET_KEY is ignored.",
+                self.signer_id,
+            )
+        })
     }
 
     /// The signer's public key, granted full access on accounts a deploy
@@ -391,7 +393,10 @@ mod tests {
         assert!(warns, "the credential this write signs with is not ignored");
         assert!(warning.contains("--secret-key/$SECRET_KEY"), "{warning}");
         assert!(warning.contains("signer.testnet"), "{warning}");
-        assert!(!warning.contains(SECRET), "secret leaked: {warning}");
+        assert!(
+            !warning.contains(SECRET),
+            "the warning must not echo the credential"
+        );
     }
 
     #[tokio::test]
