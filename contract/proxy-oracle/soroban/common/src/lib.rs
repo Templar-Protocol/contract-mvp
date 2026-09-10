@@ -1,16 +1,53 @@
 #![no_std]
 
-use soroban_sdk::{contractclient, contracterror, contracttype, Address, BytesN, Env, Symbol, Vec};
+use soroban_sdk::{
+    contractclient, contracterror, contracttype, Address, BytesN, Env, IntoVal, Symbol, Val, Vec,
+};
+use stellar_access::ownable::get_owner;
 use templar_primitives::Decimal;
 
 pub const DEFAULT_TTL_THRESHOLD: u32 = 518_400;
 pub const DEFAULT_TTL_EXTEND_TO: u32 = 3_110_400;
 pub const MAX_MANUAL_TRIP_METADATA_LEN: usize = 1024;
+/// Largest SEP-40 `decimals` a price can be re-scaled to without overflowing i128 arithmetic.
+pub const MAX_SEP40_DECIMALS: u32 = 18;
 
 pub fn extend_instance_ttl(env: &Env) {
     env.storage()
         .instance()
         .extend_ttl(DEFAULT_TTL_THRESHOLD, DEFAULT_TTL_EXTEND_TO);
+}
+
+pub fn extend_persistent_ttl<K: IntoVal<Env, Val>>(env: &Env, key: &K) {
+    let storage = env.storage().persistent();
+    if storage.has(key) {
+        storage.extend_ttl(key, DEFAULT_TTL_THRESHOLD, DEFAULT_TTL_EXTEND_TO);
+    }
+}
+
+/// Owner-gated wasm swap in the OpenZeppelin `Upgradeable` shape
+/// (`upgrade(env, new_wasm_hash, operator)`); the caller publishes its own event.
+pub fn owner_upgrade(
+    env: &Env,
+    new_wasm_hash: &BytesN<32>,
+    operator: &Address,
+) -> Result<(), ContractError> {
+    operator.require_auth();
+    if get_owner(env).as_ref() != Some(operator) {
+        return Err(ContractError::Unauthorized);
+    }
+    if is_zero_wasm_hash(new_wasm_hash) {
+        return Err(ContractError::InvalidInput);
+    }
+    env.deployer()
+        .update_current_contract_wasm(new_wasm_hash.clone());
+    Ok(())
+}
+
+/// SEP-40 timestamp bucketing: the start of the `resolution`-wide window holding `timestamp`.
+#[must_use]
+pub fn bucket_timestamp(timestamp: u64, resolution: u32) -> u64 {
+    timestamp - (timestamp % u64::from(resolution))
 }
 
 /// Returns true when `wasm_hash` is all zero bytes.
@@ -47,6 +84,17 @@ pub struct NormalizedPrice {
     pub timestamp: u64,
 }
 
+/// Outcome of one runtime `refresh(asset)` call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[contracttype]
+pub enum RefreshStatus {
+    Accepted(NormalizedPrice),
+    Blocked(u32),
+    ResolveFailed(u32),
+    UnknownAsset,
+    SourceUnavailable,
+}
+
 /// SEP-40 `PriceFeed` trait. Implemented by external price sources the
 /// main proxy oracle consumes, and by the `Sep40Adapter` contracts that
 /// re-expose the proxy oracle's normalized prices in SEP-40 form.
@@ -79,6 +127,14 @@ pub trait ProxyOracleTrait {
     /// inspect the returned timestamps.
     fn aggregated_history(env: Env, asset: Asset, records: u32) -> Option<Vec<NormalizedPrice>>;
     fn source_base(env: Env) -> Option<Asset>;
+}
+
+/// Permissionless maintenance surface of the proxy oracle runtime, safe to fan
+/// out from a batcher.
+#[contractclient(name = "ProxyOracleMaintenanceClient")]
+pub trait ProxyOracleMaintenanceTrait {
+    fn refresh(env: Env, asset: Asset) -> RefreshStatus;
+    fn extend_ttl(env: Env, asset: Asset) -> Result<(), ContractError>;
 }
 
 /// Convert a normalized exponent-form price to SEP-40 `PriceData` with the

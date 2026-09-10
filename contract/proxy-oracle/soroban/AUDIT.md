@@ -24,7 +24,15 @@ for NEAR parity, and `RUNBOOK.md` for operations.
    the parent `source_base`, rescales to immutable resolution and owner-mutable
    decimals, fails closed after decommission or parent-base drift, and emits
    telemetry for decommission and upgrade actions.
-4. **Shared DTOs** (`common/src/lib.rs`) and the **kernel**
+4. **Pyth Lazer source** (`pyth-lazer-source-contract/src/lib.rs`) — SEP-40 source over
+   Pyth's stateless verifier: channel filter, payload freshness window, per-asset
+   strictly-advancing publish time (anti-replay), feed-count cap, `feed_id ↔ Asset`
+   map, owner-gated mapping/freshness/decimals/upgrade, permissionless
+   `update_price_feeds` and `extend_ttl`.
+5. **Batcher** (`batcher-contract/src/lib.rs`) — stateless fan-out of the runtime's
+   permissionless `refresh` / `extend_ttl` and sibling `extend_ttl()` calls, plus
+   instance-and-code TTL renewal for every target.
+6. **Shared DTOs** (`common/src/lib.rs`) and the **kernel**
    (`templar-proxy-oracle-kernel`: `MedianLow` aggregation, `FreshnessFilter`,
    and the `StepwiseChange` / `MonotonicRun` / `WindowedChangeDelta` /
    `CumulativeChange` breakers).
@@ -32,15 +40,18 @@ for NEAR parity, and `RUNBOOK.md` for operations.
 ## Out of scope
 
 Non-deployable support code (`justfile`, `scripts/`), Stellar CLI invocations,
-RedStone's own Stellar SEP-40 wrapper contracts, off-chain keepers / refresh
-bots, and monitoring infrastructure.
+Reflector's and RedStone's own Stellar SEP-40 contracts, Pyth's Lazer verifier
+contract and the vendored `pyth-lazer-stellar-sdk` payload parser, off-chain
+keepers / refresh bots, and monitoring infrastructure.
 
 ## Threat-model assumptions
 
 - The Stellar network and Soroban host are trusted; host-level exploits are out
   of scope.
 - The governance owner key is a secure multisig/process outside this boundary.
-- RedStone wrapper contracts report correct prices and timestamps.
+- Reflector and RedStone SEP-40 contracts report correct prices and timestamps.
+- Pyth's Lazer verifier accepts only payloads signed by Pyth's trusted signer set;
+  a compromised signer is a Pyth-side failure, bounded on our side by quorum.
 - Ledger timestamps are accurate within Soroban's resolution; extreme clock skew
   is out of model.
 - An off-chain keeper calls `extend_ttl` at least weekly; eviction from missed

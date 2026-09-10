@@ -8,7 +8,7 @@ extern crate alloc;
 use alloc::vec::Vec as AllocVec;
 
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, Vec};
-use stellar_access::ownable::{get_owner, set_owner, Ownable};
+use stellar_access::ownable::{set_owner, Ownable};
 use stellar_macros::only_owner;
 use templar_primitives::Nanoseconds;
 use templar_proxy_oracle_kernel::{
@@ -19,13 +19,15 @@ use templar_proxy_oracle_kernel::{
     Price,
 };
 use templar_proxy_oracle_soroban_common::validate_proxy_config;
-use templar_proxy_oracle_soroban_common::{extend_instance_ttl, is_zero_wasm_hash};
+use templar_proxy_oracle_soroban_common::{
+    extend_instance_ttl, extend_persistent_ttl, owner_upgrade,
+};
 pub use templar_proxy_oracle_soroban_common::{
     Asset, CircuitBreakerConfig, ContractError,
     CumulativeChangeConfig as SorobanCumulativeChangeConfig,
     MonotonicRunConfig as SorobanMonotonicRunConfig, NormalizedPrice, PriceData, PriceFeedClient,
-    PriceFeedTrait, ProxyConfig, ProxyOracleClient, ProxyOracleTrait, RearmConfig,
-    SetEnforcedConfig, SorobanDecimal, SourceConfig,
+    PriceFeedTrait, ProxyConfig, ProxyOracleClient, ProxyOracleMaintenanceTrait, ProxyOracleTrait,
+    RearmConfig, RefreshStatus, SetEnforcedConfig, SorobanDecimal, SourceConfig,
     StepwiseChangeConfig as SorobanStepwiseChangeConfig,
     WindowedChangeDeltaConfig as SorobanWindowedChangeDeltaConfig, MAX_MANUAL_TRIP_METADATA_LEN,
 };
@@ -50,8 +52,8 @@ use codes::breaker_error;
 use conversion::{circuit_breaker_from_config, validate_source_decimals};
 use refresh::{cached_accepted_no_older_than, refresh_one};
 use storage::{
-    add_asset, clear_history, extend_persistent_ttl, invalidate_cache, load_assets, load_breakers,
-    remove_asset, require_proxy_exists, store_breakers, DataKey,
+    add_asset, clear_history, invalidate_cache, load_assets, load_breakers, remove_asset,
+    require_proxy_exists, store_breakers, DataKey,
 };
 
 pub(crate) const MAX_HISTORY_RECORDS: u32 = 32;
@@ -91,16 +93,6 @@ pub struct CircuitBreakerSetView {
     pub history_len: u32,
     pub is_manually_tripped: bool,
     pub is_blocking: bool,
-}
-
-#[derive(Clone)]
-#[contracttype]
-pub enum RefreshStatus {
-    Accepted(NormalizedPrice),
-    Blocked(u32),
-    ResolveFailed(u32),
-    UnknownAsset,
-    SourceUnavailable,
 }
 
 fn with_breakers<T>(
@@ -149,15 +141,7 @@ impl SorobanProxyOracle {
         operator: Address,
     ) -> Result<(), ContractError> {
         extend_instance_ttl(&env);
-        operator.require_auth();
-        if get_owner(&env).as_ref() != Some(&operator) {
-            return Err(ContractError::Unauthorized);
-        }
-        if is_zero_wasm_hash(&new_wasm_hash) {
-            return Err(ContractError::InvalidInput);
-        }
-        env.deployer()
-            .update_current_contract_wasm(new_wasm_hash.clone());
+        owner_upgrade(&env, &new_wasm_hash, &operator)?;
         ContractUpgraded { new_wasm_hash }.publish(&env);
         Ok(())
     }
@@ -359,11 +343,6 @@ impl SorobanProxyOracle {
         Ok(())
     }
 
-    pub fn refresh(env: Env, asset: Asset) -> RefreshStatus {
-        extend_instance_ttl(&env);
-        refresh_one(&env, asset)
-    }
-
     pub fn get_proxy(env: Env, asset: Asset) -> Option<ProxyConfig> {
         env.storage().persistent().get(&DataKey::Proxy(asset))
     }
@@ -390,8 +369,16 @@ impl SorobanProxyOracle {
             is_blocking: breakers.is_blocking(),
         })
     }
+}
 
-    pub fn extend_ttl(env: Env, asset: Asset) -> Result<(), ContractError> {
+#[contractimpl]
+impl ProxyOracleMaintenanceTrait for SorobanProxyOracle {
+    fn refresh(env: Env, asset: Asset) -> RefreshStatus {
+        extend_instance_ttl(&env);
+        refresh_one(&env, asset)
+    }
+
+    fn extend_ttl(env: Env, asset: Asset) -> Result<(), ContractError> {
         extend_instance_ttl(&env);
         require_proxy_exists(&env, &asset)?;
         extend_persistent_ttl(&env, &DataKey::Assets);

@@ -1,6 +1,6 @@
 # Soroban Proxy Oracle
 
-Aggregates external SEP-40 price feeds into a normalized, exponent-form cache. A companion `Sep40Adapter` contract re-exposes the cached prices as SEP-40 `PriceFeedTrait` for downstream consumers at per-adapter `decimals` / `resolution` / `base`.
+Aggregates external SEP-40 price feeds into a normalized, exponent-form cache. A companion `Sep40Adapter` contract re-exposes the cached prices as SEP-40 `PriceFeedTrait` for downstream consumers at per-adapter `decimals` / `resolution` / `base`. `PythLazerSource` turns Pyth Lazer's stateless on-chain verifier into a SEP-40 source the runtime can pull, and `ProxyOracleBatcher` fans the permissionless `refresh` / `extend_ttl` calls across assets so a keeper needs one transaction per sweep.
 
 The runtime is **not** itself a SEP-40 contract. It exposes:
 
@@ -11,7 +11,7 @@ The runtime is **not** itself a SEP-40 contract. It exposes:
 
 Reads fail closed: `aggregated_latest` and adapter `lastprice` return `None` unless the latest cached status is accepted and still fresh. `aggregated_history` and adapter `price` / `prices` return `None` while the asset is blocked but otherwise retain historical records independent of freshness.
 
-RedStone enters through RedStone's own Stellar SEP-40 wrapper contracts; this proxy does not verify RedStone payloads.
+RedStone enters through its `RedStoneSep40` adapter (`CBMGLKUQZVSAIL5CPDDAWSUY7MAKXISHMOZEVLMBUWBMFGHRJSR4WYRF` on mainnet, assets keyed by SAC address); its published per-feed contracts are Chainlink-shaped, not SEP-40, and cannot be sources. Pyth Lazer enters through `PythLazerSource`. This proxy verifies no oracle payloads itself.
 
 ## Governance
 
@@ -43,6 +43,40 @@ buckets; unrepresentable values and a parent-base mismatch fail closed. SEP-40
 metadata (`contractmeta!(key = "sep", val = "40")`) is declared here, not on the
 runtime. Official adapters are listed in the release manifest.
 
+## PythLazerSource
+
+Pyth's Lazer contract on Stellar is a stateless verifier: `verify_update(Bytes) -> Bytes`
+proves a payload was signed by a trusted signer and returns it, with no replay protection,
+ordering, or freshness check. `PythLazerSource` owns all of that and serves the result as
+SEP-40. It is `Ownable`, binds one immutable `(verifier, base)`, and holds a `feed_id ↔ Asset`
+map so a single instance can back every asset's proxy.
+
+- `update_price_feeds(payload)` — permissionless. Verifies through the configured verifier,
+  requires the configured channel and a payload timestamp inside the freshness window, caps the
+  feed count, then stores every mapped feed whose per-feed publish time strictly advances (the
+  anti-replay guard). Feeds without a positive price, an exponent, or a feed update timestamp, or whose feed update time falls outside the window, are skipped. Returns the
+  number of feeds stored. One payload covering all subscribed feeds updates every asset.
+- `lastprice(asset)` rescales the stored `(mantissa, expo)` to the contract's `decimals` and
+  keeps the second-precision publish time; `resolution` is 1 and `price` / `prices` serve only
+  the latest record (no history is kept).
+- Owner entrypoints: `add_feed` / `remove_feed` (dropping the stored price), `set_freshness`,
+  `set_decimals`, `upgrade(new_wasm_hash, operator)`. Permissionless `extend_ttl()` renews the
+  instance and every stored price. Views: `config`, `feed_mappings`, `stored_price`.
+
+The payload parser and verifier client are Pyth's own `pyth-lazer-stellar-sdk` 0.3.0, vendored
+into the `Templar-Protocol/pyth-lazer-public` fork on soroban-sdk 25 (crates.io 0.3.0 requires
+soroban-sdk 26.1 and therefore Rust ≥ 1.91). Swap to the crates.io release once the workspace
+toolchain moves.
+
+## ProxyOracleBatcher
+
+Stateless, ownerless. `refresh_many(oracle, assets)`, `extend_ttl_many(oracle, assets)` and
+`extend_ttl_contracts(contracts)` forward the runtime's and sibling contracts' permissionless
+maintenance calls inside a single Soroban operation (Stellar allows one per transaction). A
+keeper therefore needs two transactions per cycle regardless of asset count — one Lazer push,
+one batch — and holds no privileged role. The TTL calls also renew every target's instance and
+code entries, so no separate `stellar contract extend` step is needed.
+
 ## Operational notes
 
 - Configure 3–16 sources; `min_sources` must be in `[3, sources.len()]`. Invalid quorum is rejected.
@@ -53,7 +87,8 @@ runtime. Official adapters are listed in the release manifest.
 - Runtime `extend_ttl(asset)` is permissionless for registered assets and renews every surviving persistent `Proxy`, `Breakers`, `Cache`, and `History` entry.
 - Governance `extend_ttl()` is permissionless and renews governance instance state plus active persistent proposal bodies.
 - SEP-40 adapter `extend_ttl()` is permissionless and renews adapter instance config. Adapter reads also refresh instance TTL when the remaining TTL is below threshold.
-- Keep optimized WASMs within budget: runtime & governance ≤ 128 KiB, adapter ≤ 32 KiB. Recheck after ABI/event changes.
+- Keep optimized WASMs within budget: runtime & governance ≤ 128 KiB; adapter, Lazer source, and batcher ≤ 32 KiB. Recheck after ABI/event changes.
+- Reflector buckets `lastprice` timestamps to its 300s resolution, and RedStone's relayer only fires on 0.2% deviation or a 12h heartbeat, so pegged assets can sit hours stale. With three sources and `min_sources = 3` one filtered-out source fails the refresh, so set `max_age_secs` per asset to clear the slowest source and lean on breakers where the window is wide.
 
 ## Known limits
 
@@ -69,8 +104,11 @@ cargo test -p templar-proxy-oracle-kernel --features serde --lib
 cargo test -p templar-proxy-oracle-soroban-contract --features testutils
 cargo test -p templar-proxy-oracle-soroban-governance-contract --features testutils
 cargo test -p templar-proxy-oracle-soroban-sep40-adapter-contract --features testutils
+cargo test -p templar-proxy-oracle-soroban-pyth-lazer-source-contract --features testutils
+cargo test -p templar-proxy-oracle-soroban-batcher-contract --features testutils
+cargo test -p templar-proxy-oracle-soroban-integration-tests
 just -f contract/proxy-oracle/soroban/justfile build     # unoptimized WASMs
 just -f contract/proxy-oracle/soroban/justfile optimize   # optimized WASMs
 ```
 
-All three contracts must build via `stellar contract build` (not plain `cargo build`): `stellar-access` enables soroban-sdk's `experimental_spec_shaking_v2`, which only resolves under the Stellar CLI (v25.2.0+).
+All five contracts must build via `stellar contract build` (not plain `cargo build`): `stellar-access` enables soroban-sdk's `experimental_spec_shaking_v2`, which only resolves under the Stellar CLI (v25.2.0+).

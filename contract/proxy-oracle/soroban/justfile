@@ -10,7 +10,7 @@ set dotenv-load := false
 #   - Stellar CLI v25.2.0+ (cargo install --locked stellar-cli --features opt)
 #   - Python 3 (size/budget/release gate scripts)
 #
-# Size budgets: runtime & governance <= 131072 bytes (128 KiB); adapter <= 32768 (32 KiB).
+# Size budgets: runtime & governance <= 131072 bytes (128 KiB); adapter, Lazer source, batcher <= 32768 (32 KiB).
 # =============================================================================
 
 root             := justfile_directory() + "/../../.."
@@ -28,31 +28,39 @@ manifest_path    := release_dir + "/release-manifest.json"
 runtime_pkg      := "templar-proxy-oracle-soroban-contract"
 governance_pkg   := "templar-proxy-oracle-soroban-governance-contract"
 adapter_pkg      := "templar-proxy-oracle-soroban-sep40-adapter-contract"
+lazer_pkg        := "templar-proxy-oracle-soroban-pyth-lazer-source-contract"
+batcher_pkg      := "templar-proxy-oracle-soroban-batcher-contract"
 
 runtime_wasm     := wasm_dir + "/templar_proxy_oracle_soroban_contract.wasm"
 governance_wasm  := wasm_dir + "/templar_proxy_oracle_soroban_governance_contract.wasm"
 adapter_wasm     := wasm_dir + "/templar_proxy_oracle_soroban_sep40_adapter_contract.wasm"
+lazer_wasm       := wasm_dir + "/templar_proxy_oracle_soroban_pyth_lazer_source_contract.wasm"
+batcher_wasm     := wasm_dir + "/templar_proxy_oracle_soroban_batcher_contract.wasm"
 
 runtime_opt      := wasm_dir + "/templar_proxy_oracle_soroban_contract.optimized.wasm"
 governance_opt   := wasm_dir + "/templar_proxy_oracle_soroban_governance_contract.optimized.wasm"
 adapter_opt      := wasm_dir + "/templar_proxy_oracle_soroban_sep40_adapter_contract.optimized.wasm"
+lazer_opt        := wasm_dir + "/templar_proxy_oracle_soroban_pyth_lazer_source_contract.optimized.wasm"
+batcher_opt      := wasm_dir + "/templar_proxy_oracle_soroban_batcher_contract.optimized.wasm"
 
 remap_rustflags  := "--remap-path-prefix " + root + "=/workspace --remap-path-prefix /home/common/.cargo/registry/src=/cargo-registry --remap-path-prefix /nix/store=/nix-store"
 soroban_rust_toolchain := env_var_or_default("SOROBAN_RUST_TOOLCHAIN", "1.89.0")
 
 size_limit       := "131072"
-adapter_size_limit := "32768"
+small_size_limit := "32768"
 
 # =============================================================================
 # TEST
 # =============================================================================
 
-# Run all proxy-oracle Soroban unit tests (runtime + governance + adapter).
+# Run all proxy-oracle Soroban unit tests (runtime, governance, adapter, Lazer source, batcher).
 test:
     @echo "Running proxy-oracle Soroban tests..."
     @cargo test -p "{{runtime_pkg}}" --features testutils -- --nocapture
     @cargo test -p "{{governance_pkg}}" --features testutils -- --nocapture
     @cargo test -p "{{adapter_pkg}}" --features testutils -- --nocapture
+    @cargo test -p "{{lazer_pkg}}" --features testutils -- --nocapture
+    @cargo test -p "{{batcher_pkg}}" --features testutils -- --nocapture
     @echo "✓ All proxy-oracle Soroban tests passed"
 
 # Run cross-contract integration tests (full deploy + Blend pool, in-process Env).
@@ -65,51 +73,48 @@ test-integration:
 # BUILD
 # =============================================================================
 
-# Build the runtime WASM (stellar contract build, release-soroban-checked profile).
-build-runtime:
-    @echo "Building proxy-oracle runtime WASM..."
+# Build one package's WASM with `stellar contract build` (release-soroban-checked profile).
+_build-wasm package:
     @RUSTUP_TOOLCHAIN="{{soroban_rust_toolchain}}" CARGO_BUILD_RUSTFLAGS="${CARGO_BUILD_RUSTFLAGS:+$CARGO_BUILD_RUSTFLAGS }{{remap_rustflags}}" stellar contract build \
         --profile release-soroban-checked \
         --manifest-path "{{root}}/Cargo.toml" \
-        --package "{{runtime_pkg}}" \
+        --package "{{package}}" \
         --out-dir "{{wasm_dir}}"
+
+build-runtime:
+    @just -f "{{justfile_directory()}}/justfile" _build-wasm "{{runtime_pkg}}"
     @echo "✓ Built: {{runtime_wasm}}"
 
-# Build the governance WASM (stellar contract build; stellar-access needs the CLI).
 build-governance:
-    @echo "Building proxy-oracle governance WASM..."
-    @RUSTUP_TOOLCHAIN="{{soroban_rust_toolchain}}" CARGO_BUILD_RUSTFLAGS="${CARGO_BUILD_RUSTFLAGS:+$CARGO_BUILD_RUSTFLAGS }{{remap_rustflags}}" stellar contract build \
-        --profile release-soroban-checked \
-        --manifest-path "{{root}}/Cargo.toml" \
-        --package "{{governance_pkg}}" \
-        --out-dir "{{wasm_dir}}"
+    @just -f "{{justfile_directory()}}/justfile" _build-wasm "{{governance_pkg}}"
     @echo "✓ Built: {{governance_wasm}}"
 
-# Build the SEP-40 adapter WASM (stellar contract build; depends on stellar-access).
 build-sep40-adapter:
-    @echo "Building proxy-oracle SEP-40 adapter WASM..."
-    @RUSTUP_TOOLCHAIN="{{soroban_rust_toolchain}}" CARGO_BUILD_RUSTFLAGS="${CARGO_BUILD_RUSTFLAGS:+$CARGO_BUILD_RUSTFLAGS }{{remap_rustflags}}" stellar contract build \
-        --profile release-soroban-checked \
-        --manifest-path "{{root}}/Cargo.toml" \
-        --package "{{adapter_pkg}}" \
-        --out-dir "{{wasm_dir}}"
+    @just -f "{{justfile_directory()}}/justfile" _build-wasm "{{adapter_pkg}}"
     @echo "✓ Built: {{adapter_wasm}}"
 
-# Build runtime, governance, and adapter WASMs.
-build: build-runtime build-governance build-sep40-adapter
+build-lazer-source:
+    @just -f "{{justfile_directory()}}/justfile" _build-wasm "{{lazer_pkg}}"
+    @echo "✓ Built: {{lazer_wasm}}"
+
+build-batcher:
+    @just -f "{{justfile_directory()}}/justfile" _build-wasm "{{batcher_pkg}}"
+    @echo "✓ Built: {{batcher_wasm}}"
+
+# Build every proxy-oracle WASM via `stellar contract build` (stellar-access needs spec shaking; plain cargo won't do).
+build: build-runtime build-governance build-sep40-adapter build-lazer-source build-batcher
     @echo "✓ All proxy-oracle WASMs built"
 
 # =============================================================================
 # OPTIMIZE
 # =============================================================================
 
-# Optimize a package into `<name>.optimized.wasm` via `stellar contract build
-# --optimize`. That command rewrites the wasm in place under the crate's own
-# name, so we build into a staging dir and copy the single artifact to the
-# expected `.optimized.wasm` path, leaving the unoptimized build (used for the
-# before/after size delta) intact. The cargo compile is shared with the
-# unoptimized `build-*` step, so this only adds the wasm-opt pass.
-_optimize-wasm package optimized_path:
+# Build a package, then optimize it into `<name>.optimized.wasm` and print the
+# size delta. `stellar contract build --optimize` rewrites the wasm in place
+# under the crate's own name, so it runs into a staging dir and the single
+# artifact is copied out, leaving the unoptimized build intact.
+_optimize package wasm optimized label:
+    @just -f "{{justfile_directory()}}/justfile" _build-wasm "{{package}}"
     @staging="$(mktemp -d)"; \
     RUSTUP_TOOLCHAIN="{{soroban_rust_toolchain}}" CARGO_BUILD_RUSTFLAGS="${CARGO_BUILD_RUSTFLAGS:+$CARGO_BUILD_RUSTFLAGS }{{remap_rustflags}}" stellar contract build \
         --profile release-soroban-checked \
@@ -117,86 +122,58 @@ _optimize-wasm package optimized_path:
         --package "{{package}}" \
         --optimize \
         --out-dir "$staging"; \
-    cp "$staging/$(echo '{{package}}' | tr - _).wasm" "{{optimized_path}}"; \
+    cp "$staging/$(echo '{{package}}' | tr - _).wasm" "{{optimized}}"; \
     rm -rf "$staging"
-
-# Build and optimize the runtime WASM.
-optimize-runtime: build-runtime
-    @echo "Optimizing runtime WASM..."
-    @just -f "{{justfile_directory()}}/justfile" _optimize-wasm "{{runtime_pkg}}" "{{runtime_opt}}"
     @python3 "{{shared_scripts_dir}}/print_wasm_sizes.py" \
-        --wasm "{{runtime_wasm}}" \
-        --optimized "{{runtime_opt}}" \
-        --label "runtime"
-    @echo "✓ Optimized: {{runtime_opt}}"
+        --wasm "{{wasm}}" \
+        --optimized "{{optimized}}" \
+        --label "{{label}}"
+    @echo "✓ Optimized: {{optimized}}"
 
-# Build and optimize the governance WASM.
-optimize-governance: build-governance
-    @echo "Optimizing governance WASM..."
-    @just -f "{{justfile_directory()}}/justfile" _optimize-wasm "{{governance_pkg}}" "{{governance_opt}}"
-    @python3 "{{shared_scripts_dir}}/print_wasm_sizes.py" \
-        --wasm "{{governance_wasm}}" \
-        --optimized "{{governance_opt}}" \
-        --label "governance"
-    @echo "✓ Optimized: {{governance_opt}}"
+optimize-runtime:
+    @just -f "{{justfile_directory()}}/justfile" _optimize "{{runtime_pkg}}" "{{runtime_wasm}}" "{{runtime_opt}}" runtime
 
-# Build and optimize the SEP-40 adapter WASM.
-optimize-sep40-adapter: build-sep40-adapter
-    @echo "Optimizing SEP-40 adapter WASM..."
-    @just -f "{{justfile_directory()}}/justfile" _optimize-wasm "{{adapter_pkg}}" "{{adapter_opt}}"
-    @python3 "{{shared_scripts_dir}}/print_wasm_sizes.py" \
-        --wasm "{{adapter_wasm}}" \
-        --optimized "{{adapter_opt}}" \
-        --label "sep40-adapter"
-    @echo "✓ Optimized: {{adapter_opt}}"
+optimize-governance:
+    @just -f "{{justfile_directory()}}/justfile" _optimize "{{governance_pkg}}" "{{governance_wasm}}" "{{governance_opt}}" governance
+
+optimize-sep40-adapter:
+    @just -f "{{justfile_directory()}}/justfile" _optimize "{{adapter_pkg}}" "{{adapter_wasm}}" "{{adapter_opt}}" sep40-adapter
+
+optimize-lazer-source:
+    @just -f "{{justfile_directory()}}/justfile" _optimize "{{lazer_pkg}}" "{{lazer_wasm}}" "{{lazer_opt}}" lazer-source
+
+optimize-batcher:
+    @just -f "{{justfile_directory()}}/justfile" _optimize "{{batcher_pkg}}" "{{batcher_wasm}}" "{{batcher_opt}}" batcher
 
 # Build and optimize all WASMs.
-optimize: optimize-runtime optimize-governance optimize-sep40-adapter
+optimize: optimize-runtime optimize-governance optimize-sep40-adapter optimize-lazer-source optimize-batcher
     @echo "✓ All proxy-oracle WASMs optimized"
 
 # =============================================================================
 # SIZE GATE
 # =============================================================================
 
-# Enforce optimized-WASM size budgets (runtime/governance 128 KiB, adapter 32 KiB).
+# Enforce optimized-WASM size budgets (runtime/governance 128 KiB; adapter, Lazer source, batcher 32 KiB).
 size-check: optimize
-    @echo "Running size gate (limit: {{size_limit}} bytes)..."
+    @echo "Running size gate..."
     @mkdir -p "{{evidence_dir}}"
     @{ \
         echo "# Proxy-Oracle Soroban Size Gate"; \
         echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
-        echo "limit: {{size_limit}} bytes (128 KiB)"; \
-        echo ""; \
-        echo "## Runtime"; \
-        python3 "{{shared_scripts_dir}}/print_wasm_sizes.py" \
-            --wasm "{{runtime_wasm}}" \
-            --optimized "{{runtime_opt}}" \
-            --label "runtime"; \
-        echo ""; \
-        echo "## Governance"; \
-        python3 "{{shared_scripts_dir}}/print_wasm_sizes.py" \
-            --wasm "{{governance_wasm}}" \
-            --optimized "{{governance_opt}}" \
-            --label "governance"; \
-        echo ""; \
-        echo "## SEP-40 Adapter"; \
-        python3 "{{shared_scripts_dir}}/print_wasm_sizes.py" \
-            --wasm "{{adapter_wasm}}" \
-            --optimized "{{adapter_opt}}" \
-            --label "sep40-adapter"; \
-        echo ""; \
+        echo "limits: {{size_limit}} bytes (runtime, governance); {{small_size_limit}} bytes (sep40-adapter, lazer-source, batcher)"; \
+        for row in \
+            "runtime:{{runtime_wasm}}:{{runtime_opt}}:{{size_limit}}" \
+            "governance:{{governance_wasm}}:{{governance_opt}}:{{size_limit}}" \
+            "sep40-adapter:{{adapter_wasm}}:{{adapter_opt}}:{{small_size_limit}}" \
+            "lazer-source:{{lazer_wasm}}:{{lazer_opt}}:{{small_size_limit}}" \
+            "batcher:{{batcher_wasm}}:{{batcher_opt}}:{{small_size_limit}}"; do \
+            label=${row%%:*}; rest=${row#*:}; wasm=${rest%%:*}; rest=${rest#*:}; opt=${rest%%:*}; limit=${rest#*:}; \
+            echo ""; echo "## $label"; \
+            python3 "{{shared_scripts_dir}}/print_wasm_sizes.py" --wasm "$wasm" --optimized "$opt" --label "$label"; \
+            python3 "{{shared_scripts_dir}}/check_wasm_budget.py" --wasm "$opt" --max-bytes "$limit"; \
+        done; \
+        echo ""; echo "## Result: PASS"; \
     } | tee "{{evidence_dir}}/size-check.txt"
-    @python3 "{{shared_scripts_dir}}/check_wasm_budget.py" \
-        --wasm "{{runtime_opt}}" \
-        --max-bytes "{{size_limit}}"
-    @python3 "{{shared_scripts_dir}}/check_wasm_budget.py" \
-        --wasm "{{governance_opt}}" \
-        --max-bytes "{{size_limit}}"
-    @python3 "{{shared_scripts_dir}}/check_wasm_budget.py" \
-        --wasm "{{adapter_opt}}" \
-        --max-bytes "{{adapter_size_limit}}"
-    @echo "" >> "{{evidence_dir}}/size-check.txt"
-    @echo "## Result: PASS" >> "{{evidence_dir}}/size-check.txt"
     @echo "✓ Size gate passed — evidence: {{evidence_dir}}/size-check.txt"
 
 # =============================================================================
@@ -231,12 +208,7 @@ release: optimize
     @mkdir -p "{{release_dir}}"
     @python3 "{{scripts_dir}}/make_release_manifest.py" \
         --root "{{root}}" \
-        --runtime-wasm "{{runtime_opt}}" \
-        --governance-wasm "{{governance_opt}}" \
-        --adapter-wasm "{{adapter_opt}}" \
-        --runtime-pkg "{{runtime_pkg}}" \
-        --governance-pkg "{{governance_pkg}}" \
-        --adapter-pkg "{{adapter_pkg}}" \
+        --wasm-dir "{{wasm_dir}}" \
         --rust-toolchain "{{soroban_rust_toolchain}}" \
         --out "{{manifest_path}}"
     @echo "✓ Release manifest: {{manifest_path}}"

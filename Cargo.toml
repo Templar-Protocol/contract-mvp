@@ -20,6 +20,8 @@ members = [
     "contract/proxy-oracle/soroban/common",
     "contract/proxy-oracle/soroban/integration-tests",
     "contract/proxy-oracle/soroban/sep40-adapter-contract",
+    "contract/proxy-oracle/soroban/pyth-lazer-source-contract",
+    "contract/proxy-oracle/soroban/batcher-contract",
     "contract/pyth-lazer/verifier",
     "contract/pyth-lazer/contract",
     "contract/redstone-adapter",
@@ -114,7 +116,8 @@ near-sys = "0.2.8"
 near-token = "0.3.3"
 p256 = "0.13.2"
 primitive-types = { version = "0.14.0", features = ["serde"] }
-pyth-lazer-protocol = { git = "https://github.com/Templar-Protocol/pyth-lazer-public", rev = "10aebfd0075887e9784f9fb65ef28ddbadb57139", default-features = false }
+pyth-lazer-protocol = { git = "https://github.com/Templar-Protocol/pyth-lazer-public", tag = "templar/stellar-sdk-0.3.0-soroban25", default-features = false }
+pyth-lazer-stellar-sdk = { git = "https://github.com/Templar-Protocol/pyth-lazer-public", tag = "templar/stellar-sdk-0.3.0-soroban25" }
 redstone = { git = "https://github.com/redstone-finance/rust-sdk", tag = "3.1.0-pre1", default-features = false }
 reqwest = "0.12.28"
 rstest = { version = "0.24" }

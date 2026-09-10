@@ -18,6 +18,8 @@ templar-proxy-oracle-soroban-governance-common = { path = "../governance-common"
 templar-proxy-oracle-soroban-contract = { path = "../contract", features = ["testutils"] }
 templar-proxy-oracle-soroban-governance-contract = { path = "../governance-contract", features = ["testutils"] }
 templar-proxy-oracle-soroban-sep40-adapter-contract = { path = "../sep40-adapter-contract", features = ["testutils"] }
+templar-proxy-oracle-soroban-pyth-lazer-source-contract = { path = "../pyth-lazer-source-contract", features = ["testutils"] }
+templar-proxy-oracle-soroban-batcher-contract = { path = "../batcher-contract", features = ["testutils"] }
 
 [dev-dependencies]
 blend-contract-sdk = { version = "2.25.0", features = ["testutils"] }

@@ -29,6 +29,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from release_artifacts import ARTIFACTS
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -51,8 +53,11 @@ def validate_artifacts(manifest: dict, root: Path) -> list[str]:
     """Return a list of error strings; empty list means all checks passed."""
     errors: list[str] = []
 
-    for key in ("runtime_wasm", "governance_wasm", "sep40_adapter_wasm"):
-        entry = manifest.get(key, {})
+    for key in (artifact.manifest_key for artifact in ARTIFACTS):
+        entry = manifest.get(key)
+        if not entry:
+            errors.append(f"[{key}] missing from manifest (schema_version {manifest.get('schema_version', '?')})")
+            continue
         rel_path = entry.get("path", "")
         expected_sha = entry.get("sha256", "")
         expected_size = entry.get("optimized_size", -1)
@@ -100,7 +105,7 @@ def format_report(manifest: dict, _root: Path, errors: list[str]) -> str:
     lines.append(f"  rust_toolchain: {manifest.get('rust_toolchain', 'unknown')}")
     lines.append("")
 
-    for key in ("runtime_wasm", "governance_wasm", "sep40_adapter_wasm"):
+    for key in (artifact.manifest_key for artifact in ARTIFACTS):
         entry = manifest.get(key, {})
         lines.append(f"## {key}")
         lines.append(f"  package:        {entry.get('package', '?')}")
@@ -116,13 +121,10 @@ def format_report(manifest: dict, _root: Path, errors: list[str]) -> str:
     dry = manifest.get("dry_run_commands", {})
     lines.append(f"  note: {dry.get('note', '')}")
     lines.append("")
-    for cmd_key in (
-        "install_runtime",
-        "install_governance",
-        "install_sep40_adapter",
+    for cmd_key in [artifact.install_key for artifact in ARTIFACTS] + [
         "initialize_runtime",
         "initialize_governance",
-    ):
+    ]:
         cmd = dry.get(cmd_key, "<not set>")
         lines.append(f"  {cmd_key}:")
         lines.append(f"    {cmd}")

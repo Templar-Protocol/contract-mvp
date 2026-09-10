@@ -21,7 +21,7 @@ use templar_proxy_oracle_soroban_common::{
     CircuitBreakerConfig, ContractError, CumulativeChangeConfig as SorobanCumulativeChangeConfig,
     MonotonicRunConfig as SorobanMonotonicRunConfig, NormalizedPrice, PriceData, PriceFeedClient,
     ProxyConfig, StepwiseChangeConfig as SorobanStepwiseChangeConfig,
-    WindowedChangeDeltaConfig as SorobanWindowedChangeDeltaConfig,
+    WindowedChangeDeltaConfig as SorobanWindowedChangeDeltaConfig, MAX_SEP40_DECIMALS,
 };
 
 /// Convert a source feed's `PriceData` (decimal-prefixed i128) into the
@@ -31,7 +31,7 @@ pub fn source_price_to_kernel(
     source_price: PriceData,
     source_decimals: u32,
 ) -> Result<Price, ContractError> {
-    if source_decimals > 18 {
+    if source_decimals > MAX_SEP40_DECIMALS {
         return Err(ContractError::InvalidInput);
     }
     let mut value = source_price.price;
@@ -148,7 +148,7 @@ pub fn validate_source_decimals(env: &Env, config: &ProxyConfig) -> Result<(), C
             .try_decimals()
             .map_err(|_| ContractError::InvalidInput)?
             .map_err(|_| ContractError::InvalidInput)?;
-        if decimals > 18 {
+        if decimals > MAX_SEP40_DECIMALS {
             return Err(ContractError::InvalidInput);
         }
     }

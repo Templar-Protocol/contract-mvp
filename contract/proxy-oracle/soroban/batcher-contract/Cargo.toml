@@ -1,0 +1,22 @@
+[package]
+name = "templar-proxy-oracle-soroban-batcher-contract"
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+version = "0.1.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[features]
+default = []
+testutils = ["soroban-sdk/testutils"]
+
+[dependencies]
+soroban-sdk = { version = "25.0.1", features = ["alloc"] }
+templar-proxy-oracle-soroban-common = { path = "../common" }
+
+[lints]
+workspace = true

@@ -1,21 +1,28 @@
 [package]
-name = "templar-proxy-oracle-soroban-common"
+name = "templar-proxy-oracle-soroban-pyth-lazer-source-contract"
 license.workspace = true
 repository.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-version = "0.1.2"
+version = "0.1.0"
 
 [lib]
-crate-type = ["rlib"]
+crate-type = ["cdylib", "rlib"]
 path = "src/lib.rs"
 
+[features]
+default = []
+testutils = ["soroban-sdk/testutils"]
+
 [dependencies]
+pyth-lazer-stellar-sdk.workspace = true
 soroban-sdk = { version = "25.0.1", features = ["alloc"] }
 stellar-access = "0.7.1"
-templar-primitives = { path = "../../../../primitives", default-features = false }
+stellar-macros = "0.7.1"
+templar-proxy-oracle-soroban-common = { path = "../common" }
 
 [dev-dependencies]
+hex-literal.workspace = true
 rstest.workspace = true
 soroban-sdk = { version = "25.0.1", features = ["testutils", "alloc"] }
 

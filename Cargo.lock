@@ -1634,8 +1634,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "90dbd31c98227229239363921e60fcf5e558e43ec69094d46fc4996f08d1d5bc"
 dependencies = [
  "bitcoin_hashes",
- "rand 0.8.5",
- "rand_core 0.6.4",
+ "rand 0.7.3",
+ "rand_core 0.5.1",
  "serde",
  "unicode-normalization",
  "zeroize",
@@ -7608,7 +7608,7 @@ dependencies = [
 [[package]]
 name = "pyth-lazer-protocol"
 version = "0.43.0"
-source = "git+https://github.com/Templar-Protocol/pyth-lazer-public?rev=10aebfd0075887e9784f9fb65ef28ddbadb57139#10aebfd0075887e9784f9fb65ef28ddbadb57139"
+source = "git+https://github.com/Templar-Protocol/pyth-lazer-public?tag=templar%2Fstellar-sdk-0.3.0-soroban25#7ee94541c88e023d7804c0031f1209116d7c88e7"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -7626,6 +7626,14 @@ dependencies = [
  "serde_with",
  "strum 0.27.2",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "pyth-lazer-stellar-sdk"
+version = "0.3.0"
+source = "git+https://github.com/Templar-Protocol/pyth-lazer-public?tag=templar%2Fstellar-sdk-0.3.0-soroban25#7ee94541c88e023d7804c0031f1209116d7c88e7"
+dependencies = [
+ "soroban-sdk",
 ]
 
 [[package]]
@@ -13776,11 +13784,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "templar-proxy-oracle-soroban-batcher-contract"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+ "templar-proxy-oracle-soroban-common",
+]
+
+[[package]]
 name = "templar-proxy-oracle-soroban-common"
 version = "0.1.2"
 dependencies = [
  "rstest",
  "soroban-sdk",
+ "stellar-access",
  "templar-primitives",
 ]
 
@@ -13829,11 +13846,26 @@ dependencies = [
  "rstest",
  "soroban-sdk",
  "templar-primitives",
+ "templar-proxy-oracle-soroban-batcher-contract",
  "templar-proxy-oracle-soroban-common",
  "templar-proxy-oracle-soroban-contract",
  "templar-proxy-oracle-soroban-governance-common",
  "templar-proxy-oracle-soroban-governance-contract",
+ "templar-proxy-oracle-soroban-pyth-lazer-source-contract",
  "templar-proxy-oracle-soroban-sep40-adapter-contract",
+]
+
+[[package]]
+name = "templar-proxy-oracle-soroban-pyth-lazer-source-contract"
+version = "0.1.0"
+dependencies = [
+ "hex-literal",
+ "pyth-lazer-stellar-sdk",
+ "rstest",
+ "soroban-sdk",
+ "stellar-access",
+ "stellar-macros",
+ "templar-proxy-oracle-soroban-common",
 ]
 
 [[package]]

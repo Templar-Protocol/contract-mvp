@@ -10,7 +10,7 @@ Examples assume these are exported, and use the `inv` helper for brevity:
 
 ```bash
 export NET=<network> SRC=<identity>                 # network + signing identity
-export RT=<runtime_id> GOV=<governance_id> AD=<adapter_id>
+export RT=<runtime_id> GOV=<governance_id> AD=<adapter_id> LZ=<lazer_source_id> BATCH=<batcher_id>
 JF=contract/proxy-oracle/soroban/justfile
 inv() { stellar contract invoke --network "$NET" --source "$SRC" "$@"; }
 ```
@@ -26,10 +26,25 @@ just -f $JF release        # write target/proxy-oracle-soroban/release-manifest.
 just -f $JF dry-run        # validate artifacts (SHA-256 + size), no broadcast
 ```
 
-Size budgets: runtime & governance ≤ 131072 bytes (128 KiB), adapter ≤ 32768
-(32 KiB), enforced by `size-check`. The manifest records git commit, Stellar CLI
+Size budgets: runtime & governance ≤ 131072 bytes (128 KiB); adapter, Lazer
+source, and batcher ≤ 32768 (32 KiB), enforced by `size-check`. The manifest records git commit, Stellar CLI
 and toolchain versions, SHA-256 checksums, and optimized sizes — cross-check the
 SHA-256 against the on-chain hash after install.
+
+## 1b. Live end-to-end rehearsal
+
+`scripts/e2e_live.sh` drives the whole stack against the real Reflector,
+RedStone and Pyth Lazer contracts, resumably, recording every id and tx hash
+under `target/proxy-oracle-soroban/e2e/<net>/`:
+
+```bash
+NET=testnet SRC=<identity> PYTH_LAZER_API_KEY=<key> \
+  contract/proxy-oracle/soroban/scripts/e2e_live.sh all      # or: deploy|configure|push|refresh
+```
+
+Mainnet needs `ALLOW_MAINNET_WRITE=1` and bids `FEE_STROOPS` (default 0.1 XLM).
+Size `MAX_AGE_SECS` to the slowest source on that network (RedStone testnet
+XLM lags ~30 min; mainnet ~3 min).
 
 ## 2. Deploy
 
@@ -40,18 +55,22 @@ stellar contract install --network $NET --source $SRC \
   --wasm target/proxy-oracle-soroban/wasm/<artifact>.optimized.wasm
 ```
 
-for `templar_proxy_oracle_soroban_contract`, `..._governance_contract`, and
-`..._sep40_adapter_contract`.
+for `templar_proxy_oracle_soroban_contract`, `..._governance_contract`,
+`..._sep40_adapter_contract`, `..._pyth_lazer_source_contract`, and
+`..._batcher_contract`.
 
 ## 3. Initialize
 
-Constructors are one-shot (`AlreadyInitialized` on re-call). Initialize the
-runtime, then governance:
+Constructors are one-shot (`AlreadyInitialized` on re-call). The runtime takes
+its owner and governance takes the runtime, so deploy the runtime with a
+bootstrap owner first and hand it to governance once governance exists:
 
 ```bash
-inv --id $RT  -- __constructor --governance $GOV --base '{"Other":"USD"}'
-inv --id $GOV -- __constructor --admin <ADMIN> --proxy_oracle $RT \
-    --initial_uniform_ttl_ns 86400000000000   # 24h, uniform across all OperationKinds
+stellar contract deploy --network $NET --source $SRC --wasm-hash <RUNTIME_HASH> -- \
+  --governance <ADMIN> --base '{"Other":"USD"}'          # bootstrap owner = ADMIN
+stellar contract deploy --network $NET --source $SRC --wasm-hash <GOV_HASH> -- \
+  --admin <ADMIN> --proxy_oracle $RT \
+  --initial_uniform_ttl_ns 86400000000000                # 24h, uniform across all OperationKinds
 ```
 
 - `base` is the source-validation invariant — every source's `base()` must match
@@ -77,6 +96,21 @@ Deploy one adapter per feed (`decimals ≤ 18`, `resolution ≠ 0`):
 stellar contract deploy --network $NET --source $SRC --wasm-hash <ADAPTER_HASH> -- \
   --owner <OWNER> --parent_oracle $RT --asset '{"Other":"BTC"}' \
   --decimals 8 --resolution 1 --base '{"Other":"USD"}'
+```
+
+Deploy the Pyth Lazer source once, mapping every Lazer feed id to the asset key
+the proxy config will use for it (mainnet verifier
+`CACZ3GBAKUPIAFRILUFO27J5RUH5GJ2VSJ46LP6GJYSKGDRTQ5MS3HCH`, testnet
+`CAYFT5JE3UQTKT4Q6ZOZK4FXVYVT6RE3MFC7STA4UB6WAEGBT65MRU52`; feed ids XLM 23,
+USDC 7, EURC 240), and the stateless batcher with no arguments:
+
+```bash
+stellar contract deploy --network $NET --source $SRC --wasm-hash <LAZER_HASH> -- \
+  --owner <OWNER> \
+  --config '{"verifier":"<PYTH_VERIFIER>","base":{"Other":"USD"},"decimals":8,
+             "channel":"FixedRate200ms","freshness":{"max_age_secs":120,"max_ahead_secs":5}}' \
+  --feed_mappings '[{"feed_id":23,"asset":{"Other":"XLM"}},{"feed_id":7,"asset":{"Other":"USDC"}}]'
+stellar contract deploy --network $NET --source $SRC --wasm-hash <BATCHER_HASH>
 ```
 
 ## 4. Governance proposals
@@ -126,17 +160,23 @@ the `--action` JSON).
 **Sources** — `SetProxy` / `RemoveProxy`:
 
 ```json
-{"SetProxy": [{"Other":"BTC"}, {
-  "sources": [{"oracle":"<SRC1>","asset":{"Other":"BTC"}},
-              {"oracle":"<SRC2>","asset":{"Other":"BTC"}},
-              {"oracle":"<SRC3>","asset":{"Other":"BTC"}},
-              {"oracle":"<SRC4>","asset":{"Other":"BTC"}}],
-  "min_sources": 3, "max_age_secs": 120, "max_clock_drift_secs": 30 }]}
+{"SetProxy": [{"Other":"XLM"}, {
+  "sources": [{"oracle":"CAFJZQWSED6YAWZU3GWRTOCNPPCGBN32L7QV43XX5LZLFTK6JLN34DLN","asset":{"Other":"XLM"}},
+              {"oracle":"CBMGLKUQZVSAIL5CPDDAWSUY7MAKXISHMOZEVLMBUWBMFGHRJSR4WYRF","asset":{"Stellar":"CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA"}},
+              {"oracle":"<LZ>","asset":{"Other":"XLM"}}],
+  "min_sources": 3, "max_age_secs": 600, "max_clock_drift_secs": 60 }]}
 ```
 
 3–16 sources; `min_sources ∈ [3, n]`; no duplicate oracle address; both
 freshness bounds are required. `max_age_secs` is capped at 604800 (seven days)
-and `max_clock_drift_secs` at 3600 (one hour). Changing the source set or quorum
+and `max_clock_drift_secs` at 3600 (one hour). The asset key is per source
+(Reflector keys by symbol, RedStone by SAC address). Size `max_age_secs` to the
+slowest source: Reflector buckets `lastprice` timestamps to its 300s
+resolution, so anything ≤ 300 drops it on most refreshes; RedStone updates on
+0.2% deviation or a 12h heartbeat, so pegged assets (USDC, EURC) need ~46800
+and rely on breakers instead. With three sources and `min_sources = 3`, one
+stale source fails the refresh and the feed goes dark until the next accepted
+one. Changing the source set or quorum
 clears the breaker set, history, and cache; configure and add breakers again after
 the source migration. `RemoveProxy` clears all state for the asset.
 
@@ -174,7 +214,14 @@ storage-only.
 
 ```bash
 inv --id $RT -- refresh --asset '{"Other":"BTC"}'
+# or every asset in one operation:
+inv --id $BATCH -- refresh_many --oracle $RT --assets '[{"Other":"XLM"},{"Other":"USDC"}]'
 ```
+
+A Lazer-backed proxy needs the source fed first: fetch a `leEcdsa`-format update
+covering every mapped feed (one subscription, one payload) and push it with
+`inv --id $LZ -- update_price_feeds --payload <hex>`; the return value is the
+number of feeds stored (0 means nothing advanced).
 
 Returns `RefreshStatus`: `Accepted` (cache updated), `Blocked` (breaker),
 `ResolveFailed` (aggregation or internal storage state), `SourceUnavailable` (no
@@ -192,8 +239,11 @@ manually or automatically blocked, but they do not apply a freshness cutoff.
 ```bash
 inv --id $RT  -- extend_ttl --asset '{"Other":"BTC"}'
 inv --id $GOV -- extend_ttl
+# or batched:
+inv --id $BATCH -- extend_ttl_many --oracle $RT --assets '[{"Other":"XLM"},{"Other":"USDC"}]'
+inv --id $BATCH -- extend_ttl_contracts --contracts '["'$GOV'","'$AD'","'$LZ'"]'
 ```
-Governance TTL extension is permissionless: the invoker pays the transaction fee, but no role or authorization is required.
+Every TTL entrypoint is permissionless: the invoker pays the transaction fee, but no role or authorization is required. The batcher also renews each target's (and its own) instance and code entries, so the WASM code cannot be archived out from under live instances.
 
 The runtime accepts only registered assets. Once the proxy exists, it renews every
 surviving per-asset key independently; a missing cache, history, breaker set, or

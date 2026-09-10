@@ -52,9 +52,15 @@ Use this section as an execution checklist: read the local docs first, preserve 
 - `contract/pyth-lazer` (`templar-pyth-lazer-verifier` / `templar-pyth-lazer-adapter-contract`)
   Read first: `contract/pyth-lazer/README.md`, `contract/pyth-lazer/SPEC.md`, `contract/pyth-lazer/TRUSTED_SIGNERS.md`.
   Read/inspect: `contract/pyth-lazer/verifier/src/verify.rs`, `contract/pyth-lazer/contract/src/lib.rs`, `contract/pyth-lazer/contract/src/events.rs` (`FeedData` + its price projections live in `common/src/oracle/lazer.rs`).
-  Why it matters: a feed-id-native Lazer price oracle read by the proxy-oracle's `Lazer` source — forged, stale, or mis-scaled prices flow straight into borrow accounting. The wire parser is a forked `pyth-lazer-protocol` pinned by exact rev; bumps are security-sensitive.
+  Why it matters: a feed-id-native Lazer price oracle read by the proxy-oracle's `Lazer` source — forged, stale, or mis-scaled prices flow straight into borrow accounting. The wire parser is a forked `pyth-lazer-protocol` pinned by fork tag (Cargo.lock records the commit); bumps are security-sensitive.
   Watch for: signer/trust/expiry + ed25519 checks, canonical-encoding (`NonCanonical`) rejection, the freshness window and per-feed monotonic anti-replay, confidence/EMA discipline, `SignerSet` invariants, and storage-fee/refund.
   Minimum verification: `cargo test -p templar-pyth-lazer-verifier -p templar-pyth-lazer-adapter-contract`; `cargo check --target wasm32-unknown-unknown -p templar-pyth-lazer-adapter-contract`.
+- `contract/proxy-oracle/soroban/pyth-lazer-source-contract` (`templar-proxy-oracle-soroban-pyth-lazer-source-contract`)
+  Read first: `contract/proxy-oracle/soroban/README.md` (PythLazerSource section), `contract/proxy-oracle/soroban/AUDIT.md`.
+  Read/inspect: `contract/proxy-oracle/soroban/pyth-lazer-source-contract/src/lib.rs`.
+  Why it matters: it is a SEP-40 source in the Soroban proxy oracle's price path. Pyth's on-chain verifier only checks the signature; replay, ordering, and freshness are enforced here, so a gap ships a stale or replayed price into aggregation. The payload parser is Pyth's `pyth-lazer-stellar-sdk` vendored into the `pyth-lazer-public` fork and pinned by fork tag (Cargo.lock records the commit); bumps are security-sensitive.
+  Watch for: the per-asset strictly-advancing publish time, the payload freshness window and channel filter, the positive-price / exponent-present skip rules, the `decimals` rescale in `lastprice`, and the 32 KiB size budget.
+  Minimum verification: `cargo test -p templar-proxy-oracle-soroban-pyth-lazer-source-contract --features testutils`; `cargo test -p templar-proxy-oracle-soroban-integration-tests --test lazer_source`.
 - `gateway/*` (the Templar gateway: `templar-gateway-*`)
   Read first: `gateway/README.md` (RPC naming) and `gateway/METHODS.md` (the generated catalog of every method: kind, input → output, summary).
   Why it matters: the gateway is the single standardized implementation of NEAR reads and writes (planning, signing, multi-step finalization, idempotency/replay). Rust consumers integrate it in-process via `templar-gateway-client`; the JSON-RPC service is for non-Rust clients.

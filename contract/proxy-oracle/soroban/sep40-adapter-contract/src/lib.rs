@@ -7,13 +7,11 @@ use soroban_sdk::{
     contract, contractevent, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
     Symbol, Vec,
 };
-use stellar_access::ownable::{
-    get_owner, renounce_ownership as relinquish_ownership, set_owner, Ownable,
-};
+use stellar_access::ownable::{renounce_ownership as relinquish_ownership, set_owner, Ownable};
 use stellar_macros::only_owner;
 use templar_proxy_oracle_soroban_common::{
-    extend_instance_ttl, is_zero_wasm_hash, normalized_to_sep40, Asset, ContractError, PriceData,
-    PriceFeedTrait, ProxyOracleClient,
+    bucket_timestamp, extend_instance_ttl, normalized_to_sep40, owner_upgrade, Asset,
+    ContractError, PriceData, PriceFeedTrait, ProxyOracleClient, MAX_SEP40_DECIMALS,
 };
 
 const MAX_HISTORY_RECORDS: u32 = 32;
@@ -66,7 +64,7 @@ impl Sep40Adapter {
         resolution: u32,
         base: Asset,
     ) -> Result<(), ContractError> {
-        if decimals > 18 || resolution == 0 {
+        if decimals > MAX_SEP40_DECIMALS || resolution == 0 {
             return Err(ContractError::InvalidInput);
         }
         let parent = ProxyOracleClient::new(&env, &parent_oracle);
@@ -90,7 +88,7 @@ impl Sep40Adapter {
 
     #[only_owner]
     pub fn set_decimals(env: Env, decimals: u32) -> Result<(), ContractError> {
-        if decimals > 18 {
+        if decimals > MAX_SEP40_DECIMALS {
             return Err(ContractError::InvalidInput);
         }
         extend_instance_ttl(&env);
@@ -112,16 +110,8 @@ impl Sep40Adapter {
         new_wasm_hash: BytesN<32>,
         operator: Address,
     ) -> Result<(), ContractError> {
-        operator.require_auth();
-        if get_owner(&env).as_ref() != Some(&operator) {
-            return Err(ContractError::Unauthorized);
-        }
-        if is_zero_wasm_hash(&new_wasm_hash) {
-            return Err(ContractError::InvalidInput);
-        }
+        owner_upgrade(&env, &new_wasm_hash, &operator)?;
         extend_instance_ttl(&env);
-        env.deployer()
-            .update_current_contract_wasm(new_wasm_hash.clone());
         AdapterUpgraded { new_wasm_hash }.publish(&env);
         Ok(())
     }
@@ -271,10 +261,6 @@ fn normalized_to_adapter(
     }
     projected.timestamp = bucket_timestamp(projected.timestamp, resolution);
     Ok(projected)
-}
-
-fn bucket_timestamp(timestamp: u64, resolution: u32) -> u64 {
-    timestamp - (timestamp % u64::from(resolution))
 }
 
 #[cfg(test)]

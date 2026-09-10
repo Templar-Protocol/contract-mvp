@@ -10,9 +10,7 @@
 
 use soroban_sdk::{contracttype, Bytes, Env, Vec};
 use templar_proxy_oracle_kernel::proxy::circuit_breaker::CircuitBreakerSet;
-use templar_proxy_oracle_soroban_common::{
-    Asset, ContractError, NormalizedPrice, DEFAULT_TTL_EXTEND_TO, DEFAULT_TTL_THRESHOLD,
-};
+use templar_proxy_oracle_soroban_common::{Asset, ContractError, NormalizedPrice};
 
 use crate::{CachedProxyPrice, MAX_REGISTERED_ASSETS};
 
@@ -188,11 +186,4 @@ pub fn clear_history(env: &Env, asset: &Asset) {
     env.storage()
         .persistent()
         .remove(&DataKey::History(asset.clone()));
-}
-
-pub fn extend_persistent_ttl(env: &Env, key: &DataKey) {
-    let storage = env.storage().persistent();
-    if storage.has(key) {
-        storage.extend_ttl(key, DEFAULT_TTL_THRESHOLD, DEFAULT_TTL_EXTEND_TO);
-    }
 }
