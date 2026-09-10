@@ -21,45 +21,45 @@ Use this section as an execution checklist: read the local docs first, preserve 
   Read/inspect: `common/src/borrow.rs`, `common/src/market/impl.rs`, `common/src/event.rs`, `common/src/vault/mod.rs`.
   Why it matters: this crate is the protocol source of truth. Accounting, event schemas, oracle types, borrow/supply logic, and shared vault interfaces all live here.
   Watch for: arithmetic edge cases, state-transition semantics, serialization changes, and event-schema drift. A small change here can silently alter multiple contract APIs.
-  Minimum verification: `cargo test -p templar-common --lib -- --nocapture`.
+  Minimum verification: `just test-fast -p templar-common --lib`.
 - `contract/market` (`templar-market-contract`)
   Read/inspect: `contract/market/src/lib.rs`, `contract/market/src/impl_market_external.rs`, plus the corresponding logic in `templar_common::market`.
   Why it matters: the deployable contract is thin, but it adds NEP-145 storage behavior and wraps asynchronous borrow/collateral/withdraw flows around shared market logic.
   Watch for: storage charging/refunds, `storage_unregister` implications, force-unregister behavior, cross-contract finalize paths, and in-flight accounting.
-  Minimum verification: `cargo test -p templar-common --lib -- --nocapture`; if contract entrypoints or callbacks changed, also run `cargo test -p templar-market-contract -- --nocapture`.
+  Minimum verification: `just test-fast -p templar-common --lib`; if contract entrypoints or callbacks changed, also run `just test-sandbox -p templar-market-contract`.
 - `contract/vault` (`templar-vault-contract`)
   Read first: `contract/vault/README.md` and `contract/vault/near/README.md`.
   Read/inspect: `contract/vault/src/lib.rs`, `contract/vault/src/impl_callbacks.rs`, `contract/vault/src/governance.rs`, `common/src/vault/*`.
   Why it matters: this is the most complex state machine in the repository and the highest-risk place for async accounting bugs.
   Watch for: `OpState` transitions, escrow accounting, keeper-routed withdrawals, callback ordering, idle-balance resync, fee accrual, and reconciliation after partial failures.
-  Minimum verification: `cargo test -p templar-vault-contract -- --nocapture`.
+  Minimum verification: `just test-sandbox -p templar-vault-contract`.
 - `contract/registry` (`templar-registry-contract`)
   Read/inspect: `contract/registry/src/lib.rs`.
   Why it matters: this is a deployment/orchestration contract, not just a map of version keys.
   Watch for: the distinction between `Reserved` and `Deployed`, deployment finalization paths, soft deletion of version code, and failure cleanup after partial deploy flows.
-  Minimum verification: `cargo test -p templar-registry-contract -- --nocapture`.
+  Minimum verification: `just test-sandbox -p templar-registry-contract`.
 - `contract/universal-account` (`templar-universal-account-contract`) and `universal-account` (`templar-universal-account`)
   Read first: `contract/universal-account/README.md`.
   Read/inspect: `contract/universal-account/src/lib.rs`, `contract/universal-account/src/impl_migrate.rs`, and the shared transaction/signature code in `universal-account`.
   Why it matters: these crates define authentication, signature verification, nonce progression, transaction execution, and migration behavior.
   Watch for: replay protection, signing payload compatibility, migration compatibility, supported signature schemes, and any wire-format changes.
-  Minimum verification: `cargo test -p templar-universal-account-contract -- --nocapture`.
+  Minimum verification: `just test-sandbox -p templar-universal-account-contract`.
 - `service/relayer` (`templar-relayer`)
   Read first: `service/relayer/README.md`.
   Why it matters: this service is an operational security boundary for delegated actions and universal-account flows.
   Watch for: allowed-method changes, nonce handling, gas settings, SQL query changes, storage-deposit behavior, and universal-account deployment/execution integration.
-  Minimum verification: run the narrowest relevant `cargo test -p templar-relayer ...`; if SQL changes, update prepared queries as documented in the README.
+  Minimum verification: run the narrowest relevant `just test-sandbox -p templar-relayer ...`; if SQL changes, update prepared queries as documented in the README.
 - `contract/pyth-lazer` (`templar-pyth-lazer-verifier` / `templar-pyth-lazer-adapter-contract`)
   Read first: `contract/pyth-lazer/README.md`, `contract/pyth-lazer/SPEC.md`, `contract/pyth-lazer/TRUSTED_SIGNERS.md`.
   Read/inspect: `contract/pyth-lazer/verifier/src/verify.rs`, `contract/pyth-lazer/contract/src/lib.rs`, `contract/pyth-lazer/contract/src/events.rs` (`FeedData` + its price projections live in `common/src/oracle/lazer.rs`).
   Why it matters: a feed-id-native Lazer price oracle read by the proxy-oracle's `Lazer` source — forged, stale, or mis-scaled prices flow straight into borrow accounting. The wire parser is a forked `pyth-lazer-protocol` pinned by exact rev; bumps are security-sensitive.
   Watch for: signer/trust/expiry + ed25519 checks, canonical-encoding (`NonCanonical`) rejection, the freshness window and per-feed monotonic anti-replay, confidence/EMA discipline, `SignerSet` invariants, and storage-fee/refund.
-  Minimum verification: `cargo test -p templar-pyth-lazer-verifier -p templar-pyth-lazer-adapter-contract`; `cargo check --target wasm32-unknown-unknown -p templar-pyth-lazer-adapter-contract`.
+  Minimum verification: `just test-fast -p templar-pyth-lazer-verifier -p templar-pyth-lazer-adapter-contract`; `cargo check --target wasm32-unknown-unknown -p templar-pyth-lazer-adapter-contract`.
 - `gateway/*` (the Templar gateway: `templar-gateway-*`)
   Read first: `gateway/README.md` (RPC naming) and `gateway/METHODS.md` (the generated catalog of every method: kind, input → output, summary).
   Why it matters: the gateway is the single standardized implementation of NEAR reads and writes (planning, signing, multi-step finalization, idempotency/replay). Rust consumers integrate it in-process via `templar-gateway-client`; the JSON-RPC service is for non-Rust clients.
   Watch for: when migrating a consumer onto the gateway, diff it against the original operation-by-operation and map each call by **semantics, not name**. Prefer domain/standard-agnostic methods over low-level ones (e.g. `token.transfer`, which dispatches NEP-141 vs NEP-245, over `ft.transfer` — an asset may be a multi-token). If the gateway lacks a method a consumer needs, add it to the gateway rather than hand-rolling a NEAR call in the consumer. The method lists are canonical in the spec crates' `for_each_*_method!` macros (the RPC service registration and `METHODS.md` both expand them); add or remove a method's line there whenever you add or remove a method — it is the only step, and a removed spec left in the list is a compile error.
-  Minimum verification: `cargo check --workspace`; `cargo test -p templar-gateway-catalog` (keeps `METHODS.md` in sync — regenerate with `cargo test -p templar-gateway-catalog regenerate_methods_md -- --ignored`); plus the narrowest relevant `cargo test -p templar-gateway-<crate> -- --nocapture`.
+  Minimum verification: `cargo check --workspace`; `just test-fast -p templar-gateway-catalog` (keeps `METHODS.md` in sync — regenerate with `just test-fast -p templar-gateway-catalog regenerate_methods_md -- --ignored`); plus the narrowest relevant `just test -p templar-gateway-<crate>`.
 
 ## Working Norms
 
@@ -98,9 +98,9 @@ Releases themselves are cut by merging the standing release PR, which release-pl
 Notes:
 
 - Node-backed integration tests attach to a `SandboxHarness` (`gateway/testing/src/sandbox.rs`) instead of each booting its own sandbox. Raw sandbox RPC/config belongs solely to publishable `gateway/sandbox` (`templar-sandbox`); `gateway/testing` re-exports it. Under the sandbox gate they attach over RPC to the shared `neard` pool, one node per `NEXTEST_TEST_GLOBAL_SLOT`. With no pool running the harness falls back to _owned_ mode and starts its own `neard` per test — acceptable for a single test, but slow and prone to nonce contention across a whole file, so prefer `just test-sandbox` for more than one node test.
-- The sandbox gate derives test selection and Cargo package narrowing from one package classification. See "Cross-Cutting Lists To Keep in Sync" below before adding a node-backed crate. If these tests fail because no neard is available, say that clearly instead of silently skipping them. `templar-sandbox` minimum verification is `cargo test -p templar-sandbox`; the full acceptance gate is `just test-sandbox`.
-- `cargo test -p templar-common --lib` is a good fast regression check for logic changes in `common`.
-- Node-backed tests need the contract Wasms prebuilt; rebuilding WASM inside each run is much slower. `just test-sandbox` sources `script/sandbox-up.sh`, which prebuilds them and exports `TEST_CONTRACTS_PREBUILT=1`. If you run a node test by hand outside that recipe (e.g. a plain `cargo test` in owned mode), do the same first. `--stale` works by setting that same variable on the way in: the script then only verifies the artifacts exist (`prebuild-test-contracts --check`) and fails before booting nodes if any are missing.
+- The sandbox gate derives test selection and Cargo package narrowing from one package classification. See "Cross-Cutting Lists To Keep in Sync" below before adding a node-backed crate. If these tests fail because no neard is available, say that clearly instead of silently skipping them. `templar-sandbox` minimum verification is `just test-fast -p templar-sandbox`; the full acceptance gate is `just test-sandbox`.
+- `just test-fast -p templar-common --lib` is a good fast regression check for logic changes in `common`.
+- Node-backed tests need the contract Wasms prebuilt; rebuilding WASM inside each run is much slower. Always use `just test-sandbox`: it sources `script/sandbox-up.sh`, prebuilds the Wasms, and exports `TEST_CONTRACTS_PREBUILT=1`. `--stale` works by setting that same variable on the way in: the script then only verifies the artifacts exist (`prebuild-test-contracts --check`) and fails before booting nodes if any are missing.
 - The sandbox harness runs `neard` at a 40ms block delay locally but **CI pins the stock 120ms** (`NEAR_SANDBOX_BLOCK_MS` in `.github/workflows/test.yml`) — a 4-vCPU runner cannot sustain the faster cadence. Local blocks are therefore ~3× faster than CI's, so a test that relies on _incidental_ block cadence to cross a time boundary (time chunks, TTLs, interest accrual) passes locally and fails on CI. Advance chain time explicitly with `fast_forward`. `avg(min, max)` block delay is held at 310ms whatever the cadence, so `fast_forward`'s simulated time advance does not change.
 - Before optimizing anything about node-test speed, read "Test-Gate Timing" in `docs/src/testing.md` and measure with `just bench-sandbox` — several plausible ideas (installing contract code via `sandbox_patch_state`, global contracts) are measured dead ends recorded there. `just test-sandbox` writes per-test timings to `target/nextest/sandbox/junit.xml`; `script/bench/junit-diff.py` compares two such runs.
 - Run `./script/check-artifact-drift.sh` when validating the artifact catalog; it is pure and build-free (seconds), covering release-list well-formedness, ordering, and that no release claims a version its crate never reached.
