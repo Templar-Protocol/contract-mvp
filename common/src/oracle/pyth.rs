@@ -27,12 +27,28 @@ pub type OracleResponse = HashMap<PriceIdentifier, Option<Price>>;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[near(serializers = [borsh, json])]
 pub struct PriceIdentifier(
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        schemars(schema_with = "price_identifier_json_schema")
+    )]
     #[serde(
         serialize_with = "hex::serde::serialize",
         deserialize_with = "hex::serde::deserialize"
     )]
     pub [u8; 32],
 );
+
+#[cfg(not(target_arch = "wasm32"))]
+fn price_identifier_json_schema(
+    gen: &mut schemars::gen::SchemaGenerator,
+) -> schemars::schema::Schema {
+    let mut schema = gen.subschema_for::<String>().into_object();
+    let validation = schema.string();
+    validation.min_length = Some(64);
+    validation.max_length = Some(64);
+    validation.pattern = Some("^[0-9A-Fa-f]{64}$".to_string());
+    schema.into()
+}
 
 impl std::fmt::Debug for PriceIdentifier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -150,6 +166,60 @@ pub trait Pyth {
 mod tests {
     use super::*;
     use templar_primitives::Nanoseconds;
+
+    #[test]
+    fn price_identifier_schema_matches_serde_wire_format() {
+        let schema = near_sdk::serde_json::to_value(schemars::schema_for!(PriceIdentifier))
+            .expect("price identifier schema serializes");
+        let validator =
+            jsonschema::draft7::new(&schema).expect("price identifier schema is Draft 7");
+        let identifier = PriceIdentifier([0xaa; 32]);
+        let serialized =
+            near_sdk::serde_json::to_value(identifier).expect("price identifier serializes");
+
+        assert_eq!(
+            serialized,
+            near_sdk::serde_json::json!(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            )
+        );
+        validator
+            .validate(&serialized)
+            .expect("serialized price identifier is valid under its schema");
+        assert_eq!(
+            near_sdk::serde_json::from_value::<PriceIdentifier>(serialized)
+                .expect("price identifier deserializes"),
+            identifier
+        );
+
+        let uppercase = near_sdk::serde_json::json!(
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        );
+        validator
+            .validate(&uppercase)
+            .expect("uppercase hexadecimal is schema-valid");
+        assert_eq!(
+            near_sdk::serde_json::from_value::<PriceIdentifier>(uppercase)
+                .expect("uppercase hexadecimal deserializes"),
+            identifier
+        );
+
+        for malformed in [
+            near_sdk::serde_json::json!(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            near_sdk::serde_json::json!(
+                "gaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            near_sdk::serde_json::json!([0, 1]),
+        ] {
+            validator
+                .validate(&malformed)
+                .expect_err("malformed price identifier is not schema-valid");
+            near_sdk::serde_json::from_value::<PriceIdentifier>(malformed)
+                .expect_err("malformed price identifier does not deserialize");
+        }
+    }
 
     #[test]
     fn can_parse_real_price() {

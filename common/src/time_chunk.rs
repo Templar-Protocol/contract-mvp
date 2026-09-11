@@ -17,7 +17,7 @@ pub struct V1 {
 /// Configure a method of determining the current time chunk.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [json, borsh])]
-#[serde(tag = "version")]
+#[cfg_attr(not(target_arch = "wasm32"), schemars(untagged))]
 pub enum TimeChunkConfiguration {
     #[serde(untagged)]
     V0(V0),
@@ -68,6 +68,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn schema_matches_serde_wire_forms() {
+        let schema = near_sdk::serde_json::to_value(schemars::schema_for!(TimeChunkConfiguration))
+            .expect("time chunk schema serializes");
+        let validator = jsonschema::draft7::new(&schema).expect("time chunk schema is Draft 7");
+        let configurations = [
+            (
+                TimeChunkConfiguration::V0(V0::BlockTimestampMs {
+                    divisor: U64(600_000),
+                }),
+                serde_json::json!({"BlockTimestampMs":{"divisor":"600000"}}),
+            ),
+            (
+                TimeChunkConfiguration::V1(V1 {
+                    duration_ms: U64(600_000),
+                }),
+                serde_json::json!({"duration_ms":"600000"}),
+            ),
+        ];
+
+        for (configuration, expected_json) in configurations {
+            let serialized =
+                serde_json::to_value(&configuration).expect("time chunk serialization succeeds");
+            assert_eq!(serialized, expected_json);
+            validator
+                .validate(&serialized)
+                .expect("serialized time chunk is valid under its schema");
+            assert_eq!(
+                serde_json::from_value::<TimeChunkConfiguration>(serialized)
+                    .expect("time chunk deserialization succeeds"),
+                configuration
+            );
+        }
+    }
+
+    #[test]
     fn now() {
         let context = test_utils::VMContextBuilder::new()
             .block_timestamp((600_000 * 45 + 12345) * 1_000_000 /* ms -> ns */)
@@ -110,6 +145,20 @@ mod tests {
         let s = serde_json::to_string(&v0).unwrap();
 
         assert_eq!(s, r#"{"BlockTimestampMs":{"divisor":"600000"}}"#);
+    }
+
+    #[test]
+    fn v1_deserialization_allows_version_metadata() {
+        let configuration: TimeChunkConfiguration =
+            serde_json::from_str(r#"{"version":"V1","duration_ms":"600000"}"#)
+                .expect("V1 accepts ignored version metadata");
+
+        assert_eq!(
+            configuration,
+            TimeChunkConfiguration::V1(V1 {
+                duration_ms: U64(600_000),
+            })
+        );
     }
 
     #[test]
