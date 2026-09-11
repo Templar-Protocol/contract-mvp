@@ -411,7 +411,9 @@ impl AssetClass for BorrowAsset {}
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[near(serializers = [borsh, json])]
 #[serde(from = "U128", into = "U128")]
+#[cfg_attr(not(target_arch = "wasm32"), schemars(transparent))]
 pub struct FungibleAssetAmount<T: AssetClass> {
+    #[cfg_attr(not(target_arch = "wasm32"), schemars(with = "U128"))]
     amount: U128,
     #[borsh(skip)]
     discriminant: PhantomData<T>,
@@ -595,6 +597,23 @@ mod tests {
         assert_eq!(serialized, "\"100\"");
         let deserialized: BorrowAssetAmount = serde_json::from_str(&serialized).unwrap();
         assert_eq!(deserialized, amount);
+    }
+    #[test]
+    fn amount_schema_matches_serde_wire_format() {
+        let schema = serde_json::to_value(schemars::schema_for!(BorrowAssetAmount))
+            .expect("amount schema serializes");
+        let validator = jsonschema::draft7::new(&schema).expect("amount schema is Draft 7");
+        let amount = BorrowAssetAmount::new(100);
+        let serialized = serde_json::to_value(amount).expect("amount serializes");
+
+        assert_eq!(serialized, serde_json::json!("100"));
+        validator
+            .validate(&serialized)
+            .expect("serialized amount is valid under its schema");
+        assert_eq!(
+            serde_json::from_value::<BorrowAssetAmount>(serialized).expect("amount deserializes"),
+            amount
+        );
     }
 
     #[test]
