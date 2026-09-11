@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1](https://github.com/Templar-Protocol/contracts/compare/templar-soroban-runtime-v1.1.0...templar-soroban-runtime-v1.1.1) - 2026-09-11
+
+### Fixed
+
+- *(soroban)* report zero for empty Blend positions
+
 ## [1.1.0](https://github.com/Templar-Protocol/contracts/compare/templar-soroban-runtime-v1.0.0...templar-soroban-runtime-v1.1.0) - 2026-08-03
 
 ### Added

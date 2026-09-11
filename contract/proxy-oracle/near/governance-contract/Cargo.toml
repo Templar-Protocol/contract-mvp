@@ -4,7 +4,7 @@ rust-version.workspace = true
 license.workspace = true
 name = "templar-proxy-oracle-near-governance-contract"
 repository.workspace = true
-version = "0.3.4"
+version = "0.3.5"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

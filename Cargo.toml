@@ -142,35 +142,35 @@ solana-sdk = "3.0.0"
 sputnikdao2 = { git = "https://github.com/near-daos/sputnik-dao-contract", rev = "5434a59dec23ee0c49df8c8c4350c208a7e75b0b" }
 stellar-strkey = { version = "0.0.16", default-features = false }
 strum = { version = "0.27", features = ["derive"] }
-templar-common = { path = "./common", version = "2.0.0" }
+templar-common = { path = "./common", version = "2.1.0" }
 templar-contract-artifacts = { path = "./contract/artifacts" }
 templar-gateway-artifacts-dispatch = { path = "./gateway/artifacts-dispatch" }
 templar-gateway-artifacts-spec = { path = "./gateway/artifacts-spec" }
-templar-gateway-client = { path = "./gateway/client", version = "0.2.4" }
-templar-gateway-core = { path = "./gateway/core", version = "0.5.0" }
+templar-gateway-client = { path = "./gateway/client", version = "0.2.5" }
+templar-gateway-core = { path = "./gateway/core", version = "0.5.1" }
 templar-gateway-macros = { path = "./gateway/macros", version = "0.1.1" }
-templar-gateway-methods-dispatch = { path = "./gateway/methods-dispatch", version = "0.5.0" }
-templar-gateway-methods-spec = { path = "./gateway/methods-spec", version = "0.5.0" }
+templar-gateway-methods-dispatch = { path = "./gateway/methods-dispatch", version = "0.5.1" }
+templar-gateway-methods-spec = { path = "./gateway/methods-spec", version = "0.5.1" }
 templar-gateway-oracle-updates-dispatch = { path = "./gateway/oracle-updates-dispatch" }
 templar-gateway-oracle-updates-spec = { path = "./gateway/oracle-updates-spec" }
 templar-gateway-runtime = { path = "./gateway/runtime" }
 templar-sandbox = { path = "./gateway/sandbox", version = "0.1.0" }
-templar-gateway-store = { path = "./gateway/store", version = "0.2.3" }
+templar-gateway-store = { path = "./gateway/store", version = "0.2.4" }
 templar-gateway-testing = { path = "./gateway/testing" }
-templar-gateway-types = { path = "./gateway/types", version = "0.4.0" }
+templar-gateway-types = { path = "./gateway/types", version = "0.4.1" }
 templar-patch-state-types = { path = "./contract/patch-state/types", version = "0.1.0" }
 templar-primitives = { path = "./primitives", version = "0.1.2" }
 templar-proxy-oracle-governance-kernel = { path = "./contract/proxy-oracle/governance-kernel", version = "0.2.1" }
 templar-proxy-oracle-kernel = { path = "./contract/proxy-oracle/kernel", version = "0.1.2" }
-templar-proxy-oracle-near-common = { path = "./contract/proxy-oracle/near/common", version = "0.1.4" }
+templar-proxy-oracle-near-common = { path = "./contract/proxy-oracle/near/common", version = "0.1.5" }
 templar-proxy-oracle-near-contract = { path = "./contract/proxy-oracle/near/contract" }
-templar-proxy-oracle-near-governance-common = { path = "./contract/proxy-oracle/near/governance-common", version = "0.2.3" }
+templar-proxy-oracle-near-governance-common = { path = "./contract/proxy-oracle/near/governance-common", version = "0.2.4" }
 templar-proxy-oracle-near-governance-contract = { path = "./contract/proxy-oracle/near/governance-contract" }
 templar-pyth-lazer-adapter-contract = { path = "./contract/pyth-lazer/contract" }
 templar-pyth-lazer-verifier = { path = "./contract/pyth-lazer/verifier" }
 templar-redstone-bridge = { path = "./service/redstone-bridge" }
 templar-tools-common = { path = "./tools/tools-common" }
-templar-universal-account = { path = "./universal-account", version = "1.2.4" }
+templar-universal-account = { path = "./universal-account", version = "1.2.5" }
 templar-vault-contract = { path = "./contract/vault/near" }
 templar-vault-kernel = { path = "./contract/vault/kernel", version = "1.0.1", features = [
     "near",

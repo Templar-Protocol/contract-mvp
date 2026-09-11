@@ -4,7 +4,7 @@ license.workspace = true
 repository.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-version = "0.2.3"
+version = "0.2.4"
 description = "Shared NEAR-facing types for the Templar proxy oracle governance contract"
 
 [dependencies]

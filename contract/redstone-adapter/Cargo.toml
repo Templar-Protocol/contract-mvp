@@ -4,7 +4,7 @@ rust-version.workspace = true
 license.workspace = true
 name = "templar-redstone-adapter-contract"
 repository.workspace = true
-version = "0.2.3"
+version = "0.2.4"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

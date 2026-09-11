@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0](https://github.com/Templar-Protocol/contracts/compare/templar-common-v2.0.0...templar-common-v2.1.0) - 2026-09-11
+
+### Added
+
+- *(market)* expose supplier yield cash pool (ENG-665) ([#625](https://github.com/Templar-Protocol/contracts/pull/625))
+
+### Fixed
+
+- *(common)* align market ABI schemas (ENG-696) ([#629](https://github.com/Templar-Protocol/contracts/pull/629))
+
 ## [2.0.0](https://github.com/Templar-Protocol/contracts/compare/templar-common-v1.5.0...templar-common-v2.0.0) - 2026-08-24
 
 ### Added
