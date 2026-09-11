@@ -394,14 +394,10 @@ mod tests {
     fn authorization_debug_redacts_secret_key() {
         let signer = signer_args("signer.testnet", None, Some(SECRET), None);
         let rendered = format!("{:?}", Authorization::try_from(&signer).expect("resolves"));
-        assert!(
-            !rendered.contains(SECRET),
-            "secret leaked in Debug: {rendered}"
-        );
-        assert!(
-            rendered.contains(REDACTED),
-            "no redaction marker: {rendered}"
-        );
+        // The rendering is deliberately kept out of the messages: on failure it
+        // would be the leaked secret.
+        assert!(!rendered.contains(SECRET), "secret leaked in Debug");
+        assert!(rendered.contains(REDACTED), "no redaction marker");
     }
 
     /// `SECRET_KEY` is a name other tools use. Parsing it eagerly meant an
