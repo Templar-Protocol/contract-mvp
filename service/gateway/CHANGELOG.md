@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-service-v0.6.0...templar-gateway-service-v0.7.0) - 2026-09-11
+
+### Added
+
+- *(gateway)* [**breaking**] oracle.updateLazer accepts multiple feeds (ENG-676) ([#615](https://github.com/Templar-Protocol/contracts/pull/615))
+
 ## [0.6.0](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-service-v0.5.1...templar-gateway-service-v0.6.0) - 2026-09-01
 
 ### Added

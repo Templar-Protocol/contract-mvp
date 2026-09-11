@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0](https://github.com/Templar-Protocol/contracts/compare/templar-market-contract-v1.5.3...templar-market-contract-v1.6.0) - 2026-09-11
+
+### Added
+
+- *(market)* expose supplier yield cash pool (ENG-665) ([#625](https://github.com/Templar-Protocol/contracts/pull/625))
+
+### Fixed
+
+- *(market)* reject excessive static yield withdrawals ([#627](https://github.com/Templar-Protocol/contracts/pull/627))
+
 ## [1.5.1](https://github.com/Templar-Protocol/contracts/compare/templar-market-contract-v1.5.0...templar-market-contract-v1.5.1) - 2026-08-24
 
 ### Fixed

@@ -4,7 +4,7 @@ license.workspace = true
 repository.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-version = "1.2.4"
+version = "1.2.5"
 description = "Chain-abstraction account identifiers and EIP-712 signature payloads for Templar Protocol"
 
 [dependencies]

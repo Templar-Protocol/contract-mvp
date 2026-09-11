@@ -6,7 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 # Explicit, not inherited: this crate is released on its own tag, and sharing
 # `[workspace.package].version` would drag every other inheritor along with it.
-version = "1.2.4"
+version = "1.2.5"
 
 [lib]
 crate-type = ["cdylib"]

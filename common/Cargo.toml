@@ -4,7 +4,7 @@ rust-version.workspace = true
 license.workspace = true
 name = "templar-common"
 repository.workspace = true
-version = "2.0.0"
+version = "2.1.0"
 description = "Shared contract types, events, assets, and math for Templar Protocol"
 
 [dependencies]
