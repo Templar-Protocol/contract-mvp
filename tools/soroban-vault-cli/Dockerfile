@@ -74,11 +74,13 @@ COPY --from=stellar-cli-builder /usr/local/cargo/bin/stellar /usr/local/bin/stel
 COPY --from=cli-builder /usr/src/templar/target/release/tmplr-soroban-vault /usr/local/bin/tmplr-soroban-vault
 
 WORKDIR /workspace
-# Runtime builds need the workspace layout for Soroban artifacts; .dockerignore
-# must keep VCS metadata, local build outputs, and secrets out of the context.
+# The source tree and toolchains remain available for explicit `--build`;
+# normal deployment resolves a verified pinned release artifact. .dockerignore
+# keeps VCS metadata, local build outputs, and secrets out of the context.
 COPY --chown=templar:templar . /workspace
 
 RUN mkdir -p \
+        /home/templar/.cache/templar/soroban-vault-cli/artifacts \
         /home/templar/.cargo \
         /home/templar/.config/stellar \
         /workspace/contract/vault/soroban/.deploy-state \
@@ -92,10 +94,11 @@ ENV SOROBAN_NETWORK=testnet
 ENV STELLAR_CONFIG_DIR=/home/templar/.config/stellar
 ENV TEMPLAR_SOROBAN_VAULT_STATE=/workspace/contract/vault/soroban/.deploy-state/manifest.json
 ENV WORKSPACE_PATH=/workspace
+ENV TEMPLAR_SOROBAN_VAULT_ARTIFACT_CACHE=/home/templar/.cache/templar/soroban-vault-cli/artifacts
 
-# These volumes persist operator state and build caches. Mounts for /workspace/target
-# or .deploy-state shadow any files copied into those image paths.
-VOLUME ["/home/templar/.cargo", "/home/templar/.config/stellar", "/workspace/contract/vault/soroban/.deploy-state", "/workspace/target"]
+# These volumes persist operator state, verified release artifacts, and build
+# caches. Mounts for /workspace/target or .deploy-state shadow copied image paths.
+VOLUME ["/home/templar/.cache/templar/soroban-vault-cli/artifacts", "/home/templar/.cargo", "/home/templar/.config/stellar", "/workspace/contract/vault/soroban/.deploy-state", "/workspace/target"]
 
 USER templar
 

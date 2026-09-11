@@ -55,3 +55,48 @@ fn json_dry_run_keeps_stdout_machine_readable() {
     assert!(stderr.contains("dry-run:"));
     assert!(stderr.contains("stellar contract invoke"));
 }
+
+#[test]
+fn json_deploy_dry_run_reports_release_intent_without_residue() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manifest = dir.path().join("state/manifest.json");
+    let workspace = dir.path().join("workspace");
+    let cache = dir.path().join("cache");
+    let output = Command::new(env!("CARGO_BIN_EXE_tmplr-soroban-vault"))
+        .env("TEMPLAR_SOROBAN_VAULT_ARTIFACT_CACHE", &cache)
+        .args([
+            "--state",
+            manifest.to_str().expect("manifest path"),
+            "--workspace-path",
+            workspace.to_str().expect("workspace path"),
+            "--json",
+            "--dry-run",
+            "deploy",
+            "wasm",
+            "vault",
+        ])
+        .output()
+        .expect("run CLI");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: Value = serde_json::from_slice(&output.stdout).expect("stdout must be JSON");
+    assert_eq!(value["ok"], true);
+    assert_eq!(value["type"], "plan");
+    let wasm = &value["data"]["wasm"][0];
+    assert_eq!(wasm["key"], "vault");
+    assert!(wasm["local_hash"].is_null());
+    assert!(wasm["action"]
+        .as_str()
+        .expect("action")
+        .contains("download pinned release soroban-v1.1.1"));
+    assert!(!manifest.exists(), "dry-run created manifest");
+    assert!(!cache.exists(), "dry-run created cache");
+    assert!(
+        !workspace.exists(),
+        "dry-run created workspace/build directories"
+    );
+}

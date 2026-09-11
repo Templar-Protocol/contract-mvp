@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- *(soroban-cli)* resolve the fixed `soroban-v1.1.1` seven-asset catalog through an exact-length,
+  SHA-256-verified release cache and fixed GitHub asset URLs
+
+### Changed
+
+- *(soroban-cli)* normal deployment now uses release/cache/workspace-seed precedence and fails
+  closed instead of compiling implicitly
+- *(soroban-cli)* persist the verified artifact cache in the operator image while retaining source,
+  Rust toolchains, and `target` for explicit `--build`
+
+### Migration
+
+- *(soroban-cli)* pass bare `--build` to opt into checked-out-source compilation; the former
+  implicit-build default and `--build false` form are no longer supported
+- *(soroban-cli)* configure a custom cache root with the non-empty
+  `TEMPLAR_SOROBAN_VAULT_ARTIFACT_CACHE` environment variable
+
+
 ## [0.2.0](https://github.com/Templar-Protocol/contracts/compare/templar-soroban-vault-cli-v0.1.0...templar-soroban-vault-cli-v0.2.0) - 2026-08-03
 
 ### Added

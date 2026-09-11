@@ -285,8 +285,8 @@ pub struct DeployStackArgs {
     #[arg(long, env = "SOROBAN_ADAPTER_ADMIN")]
     pub adapter_admin: Option<AdapterAdminArg>,
 
-    /// Rebuild missing artifacts before upload/deploy
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    /// Build from the checked-out workspace instead of using pinned release artifacts.
+    #[arg(long)]
     pub build: bool,
 
     /// Deploy fresh contract instances instead of reusing manifest ids
@@ -320,8 +320,8 @@ pub struct DeployAdaptersArgs {
     #[arg(long, env = "SOROBAN_ADAPTER_ADMIN")]
     pub adapter_admin: AdapterAdminArg,
 
-    /// Rebuild adapter artifacts before upload/deploy
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    /// Build from the checked-out workspace instead of using pinned release artifacts.
+    #[arg(long)]
     pub build: bool,
 
     /// Deploy a fresh adapter even if an adapter for the same pool already exists
@@ -343,8 +343,8 @@ pub struct DeployCuratorProxyArgs {
     #[arg(long, env = "SOROBAN_LEGACY_V1_WASM_HASH")]
     pub legacy_v1_wasm_hash: Option<WasmHash>,
 
-    /// Rebuild the curator-proxy artifact before upload/deploy.
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    /// Build from the checked-out workspace instead of using the pinned release artifact.
+    #[arg(long)]
     pub build: bool,
 
     /// Abandon a matching checkpointed proxy and deploy a fresh instance.
@@ -358,7 +358,7 @@ pub struct DeployWasmArgs {
     #[arg(value_enum)]
     pub artifact: ArtifactName,
 
-    /// Rebuild the artifact before upload/verification
+    /// Build from the checked-out workspace instead of using the pinned release artifact.
     #[arg(long)]
     pub build: bool,
 }
@@ -1243,6 +1243,71 @@ mod tests {
     }
 
     #[test]
+    fn deploy_build_flags_are_explicit_opt_ins() {
+        for args in [
+            vec!["deploy", "stack", "--admin", ADMIN],
+            vec![
+                "deploy",
+                "adapters",
+                "--blend-pool",
+                POOL,
+                "--adapter-admin",
+                ADMIN,
+            ],
+            vec!["deploy", "curator-proxy", "--vault", POOL],
+            vec!["deploy", "wasm", "vault"],
+        ] {
+            let cli = Cli::try_parse_from(
+                std::iter::once("tmplr-soroban-vault").chain(args.iter().copied()),
+            )
+            .expect("parse default deploy source");
+            let build = match cli.command {
+                Commands::Deploy(args) => match args.command {
+                    DeployCommand::Stack(args) | DeployCommand::Resume(args) => args.build,
+                    DeployCommand::Adapters(args) => args.build,
+                    DeployCommand::CuratorProxy(args) => args.build,
+                    DeployCommand::Wasm(args) => args.build,
+                    DeployCommand::Plan(_) | DeployCommand::Repair(_) => {
+                        panic!("expected artifact deploy command")
+                    }
+                },
+                _ => panic!("expected deploy command"),
+            };
+            assert!(!build);
+
+            let cli = Cli::try_parse_from(
+                std::iter::once("tmplr-soroban-vault")
+                    .chain(args.iter().copied())
+                    .chain(std::iter::once("--build")),
+            )
+            .expect("parse explicit build");
+            let build = match cli.command {
+                Commands::Deploy(args) => match args.command {
+                    DeployCommand::Stack(args) | DeployCommand::Resume(args) => args.build,
+                    DeployCommand::Adapters(args) => args.build,
+                    DeployCommand::CuratorProxy(args) => args.build,
+                    DeployCommand::Wasm(args) => args.build,
+                    DeployCommand::Plan(_) | DeployCommand::Repair(_) => {
+                        panic!("expected artifact deploy command")
+                    }
+                },
+                _ => panic!("expected deploy command"),
+            };
+            assert!(build);
+        }
+
+        Cli::try_parse_from([
+            "tmplr-soroban-vault",
+            "deploy",
+            "wasm",
+            "vault",
+            "--build",
+            "false",
+        ])
+        .expect_err("legacy --build false must stay rejected");
+    }
+
+    #[test]
     fn parses_comma_delimited_custodians() {
         let cli = Cli::try_parse_from([
             "tmplr-soroban-vault",
@@ -1409,8 +1474,6 @@ mod tests {
             POOL,
             "--legacy-v1-wasm-hash",
             &legacy_hash,
-            "--build",
-            "false",
             "--force-new",
         ])
         .expect("parse targeted curator proxy deploy");

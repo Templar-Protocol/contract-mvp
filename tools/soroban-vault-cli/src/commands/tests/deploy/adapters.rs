@@ -40,7 +40,7 @@ fn deploy_adapters_appends_new_pool_to_existing_manifest() {
                 ],
                 custodians: Vec::new(),
                 adapter_admin: OTHER_CONTRACT.parse().expect("adapter admin"),
-                build: false,
+                build: true,
                 force_new: false,
             }),
         }),
@@ -95,7 +95,7 @@ fn deploy_adapters_accepts_account_blend_admin() {
                 blend_pools: vec![CONTRACT.parse().expect("pool")],
                 custodians: Vec::new(),
                 adapter_admin: ACCOUNT.parse().expect("adapter admin"),
-                build: false,
+                build: true,
                 force_new: false,
             }),
         }),
@@ -238,7 +238,7 @@ fn deploy_adapters_appends_custodial_adapter_to_existing_manifest() {
                     ACCOUNT.parse().expect("duplicate custodian"),
                 ],
                 adapter_admin: ACCOUNT.parse().expect("adapter admin"),
-                build: false,
+                build: true,
                 force_new: false,
             }),
         }),
@@ -287,10 +287,11 @@ fn deploy_adapters_appends_custodial_adapter_to_existing_manifest() {
 #[test]
 fn dry_run_deploy_adapters_does_not_execute_or_write_manifest() {
     let dir = tempfile::tempdir().expect("tempdir");
-    write_fake_blend_wasm(dir.path());
     let state = dir.path().join("manifest.json");
     manifest_with_governance_and_vault(&state);
     let before = fs::read_to_string(&state).expect("read manifest");
+    let cache = dir.path().join("release-cache");
+    let _cache_env = CacheEnvGuard::set(&cache);
     let cli = Cli {
         workspace_path: dir.path().into(),
         dry_run: true,
@@ -315,6 +316,11 @@ fn dry_run_deploy_adapters_does_not_execute_or_write_manifest() {
     assert!(executor.calls().is_empty());
     let after = fs::read_to_string(&state).expect("read manifest");
     assert_eq!(before, after);
+    assert!(!cache.exists(), "dry-run must not create the release cache");
+    assert!(
+        !dir.path().join("target").exists(),
+        "dry-run must not create build outputs"
+    );
 }
 
 #[test]
@@ -433,7 +439,7 @@ fn deploy_adapters_allows_vault_admin_after_companion_upgrade_detection() {
                 blend_pools: vec![CONTRACT.parse().expect("pool")],
                 custodians: vec![ACCOUNT.parse().expect("custodian")],
                 adapter_admin: "vault".parse().expect("vault adapter admin"),
-                build: false,
+                build: true,
                 force_new: false,
             }),
         }),

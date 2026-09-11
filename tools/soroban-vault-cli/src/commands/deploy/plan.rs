@@ -6,7 +6,9 @@ use anyhow::Context;
 use templar_soroban_shared_types::RUNTIME_FEATURE_COMPANION_UPGRADE;
 
 use crate::{
-    artifacts::{sha256_file, ArtifactSpec},
+    artifacts::{
+        inspect_existing_release_artifact, ArtifactSpec, ExistingReleaseArtifact, RELEASE_TAG,
+    },
     cli::{Cli, DeployPlanCommand},
     manifest::Manifest,
     stellar::CommandExecutor,
@@ -369,28 +371,73 @@ pub(in crate::commands) fn wasm_plan(
     spec: ArtifactSpec,
     build: bool,
 ) -> anyhow::Result<PlanWasm> {
-    let wasm_path = spec.wasm_path(&cli.workspace_path);
-    let local_hash = if wasm_path.exists() {
-        Some(sha256_file(&wasm_path)?)
+    let workspace_path = spec.wasm_path(&cli.workspace_path);
+    // Mirrors resolver precedence without side effects. Only verified bytes at
+    // the reported path produce a local hash; projected builds/downloads do not.
+    let (artifact_path, local_hash, source_action, source_includes_network) = if build {
+        (
+            workspace_path,
+            None,
+            "build artifact from the checked-out workspace".to_string(),
+            false,
+        )
     } else {
-        None
+        match inspect_existing_release_artifact(&cli.workspace_path, spec)? {
+            ExistingReleaseArtifact::Cache { path, sha256 } => (
+                path,
+                Some(sha256),
+                "use verified release cache bytes".to_string(),
+                false,
+            ),
+            ExistingReleaseArtifact::WorkspaceSeed { path, sha256 } => (
+                path,
+                Some(sha256),
+                "seed verified workspace release bytes into the cache; fetch the pinned hash and upload the cached copy if missing remotely".to_string(),
+                true,
+            ),
+            ExistingReleaseArtifact::IgnoredWorkspace {
+                cache_path,
+                workspace_path,
+                reason,
+            } => (
+                cache_path,
+                None,
+                format!(
+                    "ignore unreleased workspace bytes at {} ({reason}); download pinned release {RELEASE_TAG} artifact",
+                    workspace_path.display()
+                ),
+                false,
+            ),
+            ExistingReleaseArtifact::Missing { cache_path } => (
+                cache_path,
+                None,
+                format!("download pinned release {RELEASE_TAG} artifact"),
+                false,
+            ),
+        }
     };
     let recorded_remote_hash = manifest
         .artifacts
         .get(spec.key)
         .and_then(|record| record.remote_wasm_hash.clone());
-    let action = match (&local_hash, &recorded_remote_hash) {
+    let network_action = match (&local_hash, &recorded_remote_hash) {
         (Some(local), Some(remote)) if local == remote => {
-            "reuse recorded remote hash after fetch verification".to_string()
+            "reuse recorded remote hash after fetch verification"
         }
-        (Some(_), _) => "fetch local hash, upload if missing remotely".to_string(),
-        (None, _) if build => "build artifact, then fetch/upload resulting hash".to_string(),
-        (None, _) => "missing local artifact and build disabled".to_string(),
+        _ if source_includes_network => "",
+        (Some(_), _) => "fetch local hash and upload if missing remotely",
+        (None, _) if build => "then fetch/upload the resulting hash",
+        (None, _) => "then upload if missing remotely",
+    };
+    let action = if network_action.is_empty() {
+        source_action
+    } else {
+        format!("{source_action}; {network_action}")
     };
     Ok(PlanWasm {
         key: spec.key.to_string(),
         package: spec.package.to_string(),
-        path: wasm_path.display().to_string(),
+        path: artifact_path.display().to_string(),
         local_hash,
         recorded_remote_hash,
         action,

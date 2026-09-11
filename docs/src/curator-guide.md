@@ -152,6 +152,23 @@ contract/vault/soroban/.deploy-state/manifest.json
 It records contract IDs, constructor arguments, artifact hashes, initialization
 state, and successful transaction audit records. Treat it as operational state,
 back it up, and pass `--state` explicitly when operating more than one vault.
+### Artifact source and cache policy
+
+Normal deployment uses the fixed reviewed `soroban-v1.1.1` catalog. Resolution is strict and
+ordered: a verified release-cache entry first, an exact-pin workspace output seeded into that
+cache second, and then the fixed GitHub release asset. Every byte is checked for the catalog's
+length and SHA-256. Corrupt cache entries and download failures stop the command; deployment
+never falls back to an implicit local build.
+
+The default cache root is `<platform-cache>/templar/soroban-vault-cli/artifacts`. Set a non-empty
+`TEMPLAR_SOROBAN_VAULT_ARTIFACT_CACHE` value to use another writable root. In the published
+image, mount `/home/templar/.cache/templar/soroban-vault-cli/artifacts` as persistent storage. A
+normal deployment does not bundle WASM bytes in the executable or image.
+
+Local compilation is opt-in. Pass bare `--build` to the relevant deploy command when
+intentionally using checked-out source; it bypasses release cache/download and never writes
+built bytes into the release cache. The source-repository setting (`--contract-source-repo` or
+`SOROBAN_CONTRACT_SOURCE_REPO`) applies only to this explicit build path.
 
 ## Deploy a Stellar vault stack
 

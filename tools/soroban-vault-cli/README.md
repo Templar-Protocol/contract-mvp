@@ -18,8 +18,8 @@ tmplr-soroban-vault doctor
 ```
 
 `doctor` checks the installed `stellar` CLI, configured network/passphrase/RPC inputs, source
-identity availability without printing secret values, manifest writability, expected WASM artifacts,
-Docker mount health when running inside a container, and mainnet guard status.
+identity availability without printing secret values, release-artifact cache readiness, Docker
+mount health when running inside a container, and mainnet guard status.
 
 ```sh
 cargo run -p templar-soroban-vault-cli -- \
@@ -36,13 +36,40 @@ contract/vault/soroban/.deploy-state/manifest.json
 The deploy flow reuses contract IDs already recorded in the manifest unless `--force-new` is set.
 It reuses uploaded WASM by local SHA-256 hash when the hash can be fetched from the configured
 network, and uploads only when the WASM is missing remotely.
-When the CLI builds WASM artifacts, it embeds `source_repo` contract metadata for explorer
-build-info and source-attestation discovery. The default is
-`github:Templar-Protocol/contracts`; override it with `--contract-source-repo` or
-`SOROBAN_CONTRACT_SOURCE_REPO`, or pass an empty value to disable the metadata.
+Only an explicit `--build` compiles WASM artifacts from the checked-out source. Such builds embed
+`source_repo` contract metadata for explorer build-info and source-attestation discovery. The
+default is `github:Templar-Protocol/contracts`; override it with `--contract-source-repo` or
+`SOROBAN_CONTRACT_SOURCE_REPO`, or pass an empty value to disable the metadata. These source-repo
+settings affect explicit builds only; they do not change the pinned release artifacts below.
 During non-dry-run deployment writes, the manifest is checkpointed after each successful artifact
 upload/reuse decision, contract deploy/import record, asset-token record, and initialization. If a
 later initialize call fails, rerunning the command can reuse the IDs already written to the manifest.
+### Release artifacts and local builds
+
+Normal deployment resolves the fixed, reviewed `soroban-v1.1.1` release catalog. It never compiles
+implicitly and never embeds WASM in the CLI or image. Source selection is deliberately fixed:
+
+1. A valid entry under the release cache is rechecked for its exact byte length and SHA-256 and is
+   used without an HTTP request or build.
+2. If the cache entry is absent, an existing workspace output is accepted only when it exactly
+   matches the catalog pin; the verified bytes are atomically seeded into the cache.
+3. Otherwise the CLI downloads the recorded asset from the fixed GitHub release URL, verifies its
+   exact length and SHA-256, atomically caches it, and uses that verified path.
+
+An invalid cache entry or failed/mismatching download is a hard error; there is no compilation
+fallback. The cache root is `<platform-cache>/templar/soroban-vault-cli/artifacts` by default. Set
+the non-empty `TEMPLAR_SOROBAN_VAULT_ARTIFACT_CACHE` value to use another writable root. In the
+published image the configured root is
+`/home/templar/.cache/templar/soroban-vault-cli/artifacts`.
+`doctor` remains offline. It verifies existing cached/workspace bytes and performs a temporary
+create/sync/remove probe to prove first-run cache writability; the probe tree is removed completely
+and the real cache root is not created when it was previously absent.
+
+Local compilation is an explicit migration choice: pass bare `--build` to `deploy stack`,
+`deploy adapters`, `deploy curator-proxy`, or `deploy wasm <artifact>`. `--build` bypasses both
+release cache and download, uses the checked-out workspace, and never writes locally built bytes
+into the release cache. The old implicit-build behavior and `--build false` form are not used.
+
 Use `reconcile` or `deploy repair` to compare a checkpointed manifest with chain state before
 manual recovery. The repair plan classifies each component as `missing`, `deployed`, `initialized`,
 `unknown`, or `mismatched`, includes fetched on-chain WASM hashes where available, and reports
@@ -668,27 +695,31 @@ docker build \
   .
 ```
 
-The image includes `tmplr-soroban-vault`, `stellar-cli` v26, and Rust toolchains/targets for
-`stellar contract build`. It defaults to
-`/workspace` as the Templar workspace and persists Stellar config, deployment state, Cargo cache,
+The image includes `tmplr-soroban-vault`, `stellar-cli` v26, and Rust toolchains/targets retained
+for explicit `stellar contract build` when `--build` is passed. Normal deployment instead uses
+the fixed release catalog and verified artifact cache. It defaults to `/workspace` as the Templar
+workspace and persists Stellar config, deployment state, the verified release cache, Cargo cache,
 and build outputs through mount points.
 
 ```sh
 docker run --rm templar/soroban-vault-cli:local --help
+
+docker volume create templar-soroban-vault-artifacts
 
 docker run --rm -it \
   -v "$PWD:/workspace" \
   -v "$HOME/.config/stellar:/home/templar/.config/stellar" \
   -v "$PWD/contract/vault/soroban/.deploy-state:/workspace/contract/vault/soroban/.deploy-state" \
   -v "$PWD/target:/workspace/target" \
+  --mount type=volume,source=templar-soroban-vault-artifacts,target=/home/templar/.cache/templar/soroban-vault-cli/artifacts \
   templar/soroban-vault-cli:local status
-```
 
-The same mount pattern supports deployment commands. Mounting the workspace and `target` directory
-lets `deploy ... --build` reuse local source and build artifacts, while mounting the Stellar config
-preserves identities and network configuration across runs. Use `stellar keys use <identity>` in
-that config, or pass `-e STELLAR_ACCOUNT` to Docker when an ephemeral source account must come from
-the environment.
+The same mount pattern supports deployment commands. The cache volume persists verified release
+bytes between runs; mounting `target` and the workspace keeps checked-out source available for
+`deploy ... --build`. Mounting the Stellar config preserves identities and network configuration
+across runs. Use `stellar keys use <identity>` in that config, or pass `-e STELLAR_ACCOUNT` to
+Docker when an ephemeral source account must come from the environment. The release cache does not
+contain bundled image WASM; it is populated only after runtime pin verification.
 
 ## Common Operations
 

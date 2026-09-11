@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+state_dir=${FAKE_STELLAR_STATE:-/tmp/templar-fake-stellar}
+log_file=${FAKE_STELLAR_LOG:-${state_dir}/calls.log}
+mkdir -p "$state_dir"
+printf '%q ' "$@" >> "$log_file"
+printf '\n' >> "$log_file"
+
+record() {
+  printf '%s\n' "$1" >> "$state_dir/$1"
+}
+
+value_after() {
+  local wanted=$1
+  shift
+  local index=1
+  while (( index <= $# )); do
+    if [[ ${!index} == "$wanted" ]]; then
+      ((index++))
+      (( index <= $# )) || return 1
+      printf '%s' "${!index}"
+      return 0
+    fi
+    ((index++))
+  done
+  return 1
+}
+
+if [[ ${1:-} == tx && ${2:-} == simulate ]]; then
+  record tx-simulate
+  printf 'simulated\n'
+  exit 0
+fi
+
+if [[ ${1:-} != contract ]]; then
+  printf 'fake Stellar refuses unsupported command: %q\n' "$*" >&2
+  exit 64
+fi
+
+case ${2:-} in
+  fetch)
+    record fetch
+    requested_hash=$(value_after --wasm-hash "$@" || true)
+    if [[ -n "$requested_hash" && -f "$state_dir/remote.hash" && $(<"$state_dir/remote.hash") == "$requested_hash" ]]; then
+      exit 0
+    fi
+    exit 1
+    ;;
+
+  upload)
+    wasm_path=$(value_after --wasm "$@" || true)
+    [[ -n "$wasm_path" && -f "$wasm_path" ]] || {
+      printf 'fake upload missing --wasm file\n' >&2
+      exit 64
+    }
+    if [[ " $* " == *" --build-only "* ]]; then
+      record upload-build-only
+      printf 'FAKE_XDR\n'
+      exit 0
+    fi
+    record upload-actual
+    read -r wasm_hash _ < <(sha256sum "$wasm_path")
+    printf '%s\n' "$wasm_hash" > "$state_dir/remote.hash"
+    printf 'wasm_hash: %s\n' "$wasm_hash"
+    ;;
+
+  build)
+    record build
+    out_dir=$(value_after --out-dir "$@" || value_after --output "$@" || true)
+    package=$(value_after --package "$@" || true)
+    [[ -n "$out_dir" && -n "$package" ]] || {
+      printf 'fake build requires --package and --out-dir\n' >&2
+      exit 64
+    }
+    case "$package" in
+      templar-soroban-runtime) filename=templar_soroban_runtime.wasm ;;
+      templar-soroban-governance) filename=templar_soroban_governance.wasm ;;
+      templar-soroban-share-token) filename=templar_soroban_share_token.wasm ;;
+      templar-soroban-blend-adapter) filename=templar_soroban_blend_adapter.wasm ;;
+      templar-soroban-custodial-adapter) filename=templar_soroban_custodial_adapter.wasm ;;
+      templar-4626-proxy-soroban) filename=templar_4626_proxy_soroban.wasm ;;
+      templar-curator-proxy-soroban) filename=templar_curator_proxy_soroban.wasm ;;
+      *)
+        printf 'fake build refuses unknown package: %s\n' "$package" >&2
+        exit 64
+        ;;
+    esac
+    mkdir -p "$out_dir"
+    printf 'fake wasm for %s\n' "$package" > "$out_dir/$filename"
+    ;;
+
+  *)
+    printf 'fake Stellar refuses unsupported contract command: %q\n' "$*" >&2
+    exit 64
+    ;;
+esac

@@ -3,6 +3,8 @@ use super::*;
 #[test]
 fn deploy_plan_does_not_execute_or_write_manifest() {
     let dir = tempfile::tempdir().expect("tempdir");
+    let cache = dir.path().join("cache");
+    let _cache_env = CacheEnvGuard::set(&cache);
     write_fake_stack_wasms(dir.path());
     let state = dir.path().join("manifest.json");
     manifest_with_governance_and_vault(&state);
@@ -37,6 +39,65 @@ fn deploy_plan_does_not_execute_or_write_manifest() {
     assert!(executor.calls().is_empty());
     let after = fs::read_to_string(&state).expect("read manifest");
     assert_eq!(before, after);
+}
+
+#[test]
+fn repair_dry_run_does_not_query_stellar_or_write_manifest() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = dir.path().join("manifest.json");
+    let cli = Cli {
+        dry_run: true,
+        command: Commands::Deploy(DeployArgs {
+            command: DeployCommand::Repair(crate::cli::ReconcileArgs {
+                skip_view_verification: false,
+            }),
+        }),
+        ..base_cli(state.clone(), Commands::Status)
+    };
+    let executor = RecordingExecutor::new();
+
+    run(&cli, &executor).expect("dry repair plan");
+    assert!(executor.calls().is_empty());
+    assert!(!state.exists());
+}
+
+#[test]
+fn wasm_plan_distinguishes_cache_workspace_seed_and_build_sources() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cache = dir.path().join("cache");
+    let _cache_env = CacheEnvGuard::set(&cache);
+    let state = dir.path().join("manifest.json");
+    let cli = base_cli(state, Commands::Status);
+    let manifest = Manifest::new("testnet", None);
+    let spec = ArtifactSpec::from_name(ArtifactName::Vault);
+    let pin = spec.release.pin();
+
+    let missing = wasm_plan(&cli, &manifest, spec, false).expect("missing plan");
+    assert!(missing.local_hash.is_none());
+    assert!(missing
+        .action
+        .contains("download pinned release soroban-v1.1.1"));
+
+    let workspace_path = spec.wasm_path(&cli.workspace_path);
+    fs::create_dir_all(workspace_path.parent().expect("parent")).expect("create workspace path");
+    fs::write(&workspace_path, "wrong bytes").expect("write mismatching workspace");
+    let ignored = wasm_plan(&cli, &manifest, spec, false).expect("ignored workspace plan");
+    assert!(ignored.local_hash.is_none());
+    assert!(ignored.action.contains("ignore unreleased workspace bytes"));
+
+    fs::remove_file(&workspace_path).expect("remove mismatch");
+    let cache_path = cache
+        .join(crate::artifacts::RELEASE_TAG)
+        .join(spec.release.wasm_file_name());
+    fs::create_dir_all(cache_path.parent().expect("cache parent")).expect("create cache path");
+    fs::write(&cache_path, vec![0; pin.length]).expect("write invalid cache length-only fixture");
+    let error = wasm_plan(&cli, &manifest, spec, false).expect_err("invalid cache must fail");
+    assert!(error.to_string().contains("hashes to"));
+
+    fs::remove_dir_all(&cache).expect("remove invalid cache");
+    let build = wasm_plan(&cli, &manifest, spec, true).expect("build plan");
+    assert!(build.local_hash.is_none());
+    assert!(build.action.contains("checked-out workspace"));
 }
 
 #[test]

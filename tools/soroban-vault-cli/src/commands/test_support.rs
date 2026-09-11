@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, fs, sync::Mutex};
+use std::{
+    collections::BTreeMap,
+    fs,
+    sync::{Mutex, MutexGuard},
+};
 
 use sha2::{Digest, Sha256};
 use templar_soroban_shared_types::{
@@ -36,6 +40,38 @@ use super::{
 };
 
 const ACCOUNT: &str = "GBRFSXJNPLMYJV7EBFTBZT2PU6KN5WWPX3UKHDAAQQT7BNS7QTFCS3AY";
+static CACHE_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+struct CacheEnvGuard {
+    _lock: MutexGuard<'static, ()>,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl CacheEnvGuard {
+    fn set(path: &std::path::Path) -> Self {
+        let lock = CACHE_ENV_LOCK.lock().expect("cache env lock");
+        let previous = std::env::var_os(crate::artifacts::CACHE_ENV);
+        // SAFETY: every in-process mutation of this variable is serialized by
+        // CACHE_ENV_LOCK and restored before the guard releases the lock.
+        unsafe { std::env::set_var(crate::artifacts::CACHE_ENV, path) };
+        Self {
+            _lock: lock,
+            previous,
+        }
+    }
+}
+
+impl Drop for CacheEnvGuard {
+    fn drop(&mut self) {
+        // SAFETY: this guard still owns CACHE_ENV_LOCK, so no sibling test can
+        // read or mutate the variable while its prior value is restored.
+        if let Some(previous) = self.previous.take() {
+            unsafe { std::env::set_var(crate::artifacts::CACHE_ENV, previous) };
+        } else {
+            unsafe { std::env::remove_var(crate::artifacts::CACHE_ENV) };
+        }
+    }
+}
 const CONTRACT: &str = "CDY3B7IXFN5L4OY4UFFS2FA4MAQWJZLJD76LW37S7HFVWRS3RPQ2SIXX";
 const OTHER_CONTRACT: &str = "CBTLODGACWPBEZIDGHDLYQPGZDZRK4ITXHCET7EVPYAPP42CPIUDBUTK";
 const ASSET_CONTRACT: &str = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
@@ -436,7 +472,7 @@ fn test_deploy_stack_args(admin: &str) -> DeployStackArgs {
         blend_pools: Vec::new(),
         custodians: Vec::new(),
         adapter_admin: None,
-        build: false,
+        build: true,
         force_new: false,
     }
 }

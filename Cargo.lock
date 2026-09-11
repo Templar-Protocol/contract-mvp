@@ -14071,6 +14071,7 @@ dependencies = [
  "ed25519-dalek-bip32",
  "hex",
  "indicatif",
+ "reqwest 0.12.28",
  "secrecy",
  "serde",
  "serde_json",

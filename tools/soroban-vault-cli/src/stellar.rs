@@ -290,15 +290,14 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
     }
 
     pub fn upload(&self, wasm_path: &str) -> anyhow::Result<String> {
+        anyhow::ensure!(
+            !self.cli.dry_run,
+            "internal error: upload called during dry-run planning"
+        );
         let mut args = vec!["contract".to_string(), "upload".to_string()];
         args.extend(["--wasm".to_string(), wasm_path.to_string()]);
         args.extend(self.network_args());
         let out = self.run(args, &[], self.source_env())?;
-        if self.cli.dry_run {
-            return Ok(
-                "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-            );
-        }
         parse_hash(&out.stdout)
     }
 
@@ -310,15 +309,16 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
     }
 
     pub fn fetch_contract_wasm_hash(&self, contract_id: &str) -> anyhow::Result<String> {
+        anyhow::ensure!(
+            !self.cli.dry_run,
+            "internal error: contract WASM hash fetch called during dry-run planning"
+        );
         let out_file = temp_wasm_path(contract_id);
         let mut args = vec!["contract".to_string(), "fetch".to_string()];
         args.extend(["--id".to_string(), contract_id.to_string()]);
         args.extend(["--out-file".to_string(), out_file.display().to_string()]);
         args.extend(self.network_args());
         let result = self.run(args, &[], Vec::new());
-        if self.cli.dry_run {
-            return Ok("dry-run-wasm-hash".to_string());
-        }
         result?;
         let bytes = fs::read(&out_file)
             .with_context(|| format!("read fetched contract wasm {}", out_file.display()))?;
