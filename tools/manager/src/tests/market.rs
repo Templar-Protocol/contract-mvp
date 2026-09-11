@@ -1,7 +1,7 @@
 use clap::Parser;
 use serde_json::json;
 
-use super::CREDS;
+use super::{authorized, CREDS};
 use crate::cli::{Cli, Command};
 use crate::commands::market::MarketNs;
 
@@ -34,9 +34,11 @@ fn parses_market_create_typed_args() {
     let params = match cli.command {
         Command::Market {
             command: MarketNs::Create(cmd),
-        } => cmd
-            .try_into_spec()
-            .expect("market create should parse init args"),
+        } => {
+            let authorization = authorized(&cmd.signer);
+            cmd.try_into_spec(&authorization)
+                .expect("market create should parse init args")
+        }
         _ => panic!("expected Market::Create"),
     };
 
@@ -87,9 +89,11 @@ fn market_create_rejects_missing_init_args_file() {
     let error = match cli.command {
         Command::Market {
             command: MarketNs::Create(cmd),
-        } => cmd
-            .try_into_spec()
-            .expect_err("missing init args file should be rejected"),
+        } => {
+            let authorization = authorized(&cmd.signer);
+            cmd.try_into_spec(&authorization)
+                .expect_err("missing init args file should be rejected")
+        }
         _ => panic!("expected Market::Create"),
     };
 
@@ -124,9 +128,11 @@ fn market_create_rejects_invalid_init_args() {
     let error = match cli.command {
         Command::Market {
             command: MarketNs::Create(cmd),
-        } => cmd
-            .try_into_spec()
-            .expect_err("invalid init args should be rejected"),
+        } => {
+            let authorization = authorized(&cmd.signer);
+            cmd.try_into_spec(&authorization)
+                .expect_err("invalid init args should be rejected")
+        }
         _ => panic!("expected Market::Create"),
     };
 

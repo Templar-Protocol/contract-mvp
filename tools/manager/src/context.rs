@@ -25,7 +25,7 @@ use templar_gateway_types::{
 };
 
 use crate::cli::Cli;
-use crate::commands::signer::{PrintFormat, SignerArgs};
+use crate::commands::signer::{Authorization, Mode, PrintFormat, SignerArgs};
 
 pub(crate) struct CliContext {
     /// An unsigned client for reads and ordinary write plans. Executed writes
@@ -88,7 +88,9 @@ impl CliContext {
         &self,
         signer: &SignerArgs,
     ) -> anyhow::Result<(ManagedAccountId, Client)> {
-        let (account_id, client, _) = self.signing_client_and_key(signer).await?;
+        let (account_id, client, _) = self
+            .signing_client_and_key(Authorization::try_from(signer)?)
+            .await?;
         Ok((account_id, client))
     }
 
@@ -96,25 +98,10 @@ impl CliContext {
     /// resolving twice can prompt twice and yield two different keys.
     pub(crate) async fn signing_client_and_key(
         &self,
-        signer: &SignerArgs,
+        authorization: Authorization,
     ) -> anyhow::Result<(ManagedAccountId, Client, near_api::PublicKey)> {
-        let (signing, public_key) = signer.resolve(&self.network).await?;
+        let (signing, public_key) = authorization.resolve(&self.network).await?;
         let account_id = signing.account_id().clone();
-
-        // A deploy embeds this key as the full access key on the account it
-        // creates, and an external backend cannot validate it before resolving.
-        if let Some(asserted) = signer.asserted_public_key() {
-            anyhow::ensure!(
-                asserted == public_key,
-                "--public-key is `{asserted}`, but `{}` will sign with \
-                 `{public_key}`. A deploy embeds `--public-key` as the full access \
-                 key on the account it creates, so this would hand control to a \
-                 key you do not hold. Drop --public-key to use the signing key, \
-                 or pass the one the backend holds.",
-                *signer.account_id(),
-            );
-        }
-
         let client = Client::builder(self.network.clone())
             .with_signer(signing)
             .build()
@@ -139,14 +126,41 @@ impl CliContext {
         S: MethodSpec<Output = WriteOperationResult>,
         Dispatch: PlanWrite<S, GatewayContext>,
     {
-        if let Some(format) = signer.print() {
-            if let Some(warning) = signer.ignored_credential_warning() {
-                tracing::warn!("{warning}");
-            }
+        self.write_with(signer, |_| Ok(body)).await
+    }
+
+    /// [`Self::write`] for a spec that embeds the signer's public key: the
+    /// authorization is resolved before the spec is built, then signs it.
+    pub(crate) async fn write_with<S>(
+        &self,
+        signer: SignerArgs,
+        into_spec: impl FnOnce(&Authorization) -> anyhow::Result<S>,
+    ) -> anyhow::Result<()>
+    where
+        S: MethodSpec<Output = WriteOperationResult>,
+        Dispatch: PlanWrite<S, GatewayContext>,
+    {
+        let authorization = Authorization::try_from(&signer)?;
+        let body = into_spec(&authorization)?;
+        self.write_authorized(authorization, body).await
+    }
+
+    /// [`Self::write`] for a caller that already resolved the authorization,
+    /// to gate a preflight on it.
+    pub(crate) async fn write_authorized<S>(
+        &self,
+        authorization: Authorization,
+        body: S,
+    ) -> anyhow::Result<()>
+    where
+        S: MethodSpec<Output = WriteOperationResult>,
+        Dispatch: PlanWrite<S, GatewayContext>,
+    {
+        if let Mode::Plan(format) = *authorization.mode() {
             let plan = self
                 .client
                 .plan_request(WriteRequest {
-                    signer_account_id: signer.account_id(),
+                    signer_account_id: authorization.account_id().clone(),
                     idempotency_key: None,
                     body,
                 })
@@ -154,7 +168,7 @@ impl CliContext {
             return print_plan(format, plan);
         }
 
-        let (account_id, client) = self.signing_client_for(&signer).await?;
+        let (account_id, client, _) = self.signing_client_and_key(authorization).await?;
         let output = client.execute_as(account_id, body).await?;
         self.finish_write(&output)
     }
@@ -172,10 +186,8 @@ impl CliContext {
         Ctx: Clone,
         OracleUpdatesDispatch: PlanWrite<S, Ctx>,
     {
-        if let Some(format) = signer.print() {
-            if let Some(warning) = signer.ignored_credential_warning() {
-                tracing::warn!("{warning}");
-            }
+        let authorization = Authorization::try_from(&signer)?;
+        if let Mode::Plan(format) = *authorization.mode() {
             let context = layer_sources(GatewayContext::new(self.network.clone())?)?;
             let plan = <OracleUpdatesDispatch as PlanWrite<S, Ctx>>::plan(
                 WriteRequest {
@@ -189,7 +201,7 @@ impl CliContext {
             return print_plan(format, plan);
         }
 
-        let (signing, _) = signer.resolve(&self.network).await?;
+        let (signing, _) = authorization.resolve(&self.network).await?;
         let account_id = signing.account_id().clone();
         let (base_context, driver, signer_account_ids) = Client::builder(self.network.clone())
             .with_signer(signing)

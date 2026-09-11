@@ -33,13 +33,13 @@ use crate::commands::{
     pyth::PythNs,
     redstone::RedstoneNs,
     registry::RegistryNs,
+    signer::Authorization,
     spec::SpecNs,
     storage::StorageNs,
 };
 use crate::context::{
     all_sources, lazer_source, print_json, pyth_source, redstone_source, CliContext,
 };
-
 /// A kernel price as a plain number.
 ///
 /// Shared by the aggregation dry-run and the reference cross-check, which
@@ -108,7 +108,10 @@ async fn registry(ctx: CliContext, ns: RegistryNs) -> anyhow::Result<()> {
         RegistryNs::ListDeploymentsByKind(a) => ctx.read(a.into_spec()).await,
         RegistryNs::GetDeployment(a) => ctx.read(a.into_spec()).await,
         RegistryNs::AddVersion(a) => ctx.write(a.signer.clone(), a.try_into_spec()?).await,
-        RegistryNs::Deploy(a) => ctx.write(a.signer.clone(), a.try_into_spec()?).await,
+        RegistryNs::Deploy(a) => {
+            ctx.write_with(a.signer.clone(), |auth| a.try_into_spec(auth))
+                .await
+        }
         RegistryNs::RemoveVersion(a) => teardown::remove_version(ctx, a).await,
         RegistryNs::Remove(a) => teardown::registry_remove(ctx, a).await,
         RegistryNs::ClearDeployments(a) => teardown::clear_deployments(ctx, a).await,
@@ -135,7 +138,10 @@ async fn ft(ctx: CliContext, ns: FtNs) -> anyhow::Result<()> {
 
 async fn market(ctx: CliContext, ns: MarketNs) -> anyhow::Result<()> {
     match ns {
-        MarketNs::Create(a) => ctx.write(a.signer.clone(), a.try_into_spec()?).await,
+        MarketNs::Create(a) => {
+            ctx.write_with(a.signer.clone(), |auth| a.try_into_spec(auth))
+                .await
+        }
         MarketNs::Export(a) => export::market(ctx, a).await,
         MarketNs::Plan(a) => plan::plan(ctx, a).await,
         MarketNs::Apply(a) => plan::apply(ctx, a).await,
@@ -158,7 +164,10 @@ struct Removed {
 
 async fn proxy_oracle(ctx: CliContext, ns: ProxyOracleNs) -> anyhow::Result<()> {
     match ns {
-        ProxyOracleNs::Create(a) => ctx.write(a.signer.clone(), a.try_into_spec()?).await,
+        ProxyOracleNs::Create(a) => {
+            ctx.write_with(a.signer.clone(), |auth| a.try_into_spec(auth))
+                .await
+        }
         ProxyOracleNs::GetProxy(a) => {
             let oracle_id = a.target.resolve(&ctx).await?;
             ctx.read(a.into_spec(oracle_id)).await
@@ -181,11 +190,12 @@ async fn proxy_oracle(ctx: CliContext, ns: ProxyOracleNs) -> anyhow::Result<()> 
             ctx.write(a.signer.clone(), a.into_spec(oracle_id)).await
         }
         ProxyOracleNs::Upgrade(a) => {
+            let authorization = Authorization::try_from(&a.signer)?;
             let oracle_id = a.target.resolve(&ctx).await?;
-            if a.preflight.runs(a.signer.print().is_some()) {
+            if a.preflight.runs(authorization.mode()) {
                 upgrade_preflight::gate(&ctx, &oracle_id, &a.preflight.skip_check).await?;
             }
-            ctx.write(a.signer.clone(), a.try_into_spec(oracle_id)?)
+            ctx.write_authorized(authorization, a.try_into_spec(oracle_id)?)
                 .await
         }
         ProxyOracleNs::Governance(a) => proxy_oracle_governance(ctx, a).await,
@@ -251,7 +261,10 @@ async fn proxy_oracle_governance(
     use templar_gateway_methods_spec::proxy_oracle_governance as gov;
 
     match ns {
-        ProxyOracleGovernanceNs::Create(a) => ctx.write(a.signer.clone(), a.try_into_spec()?).await,
+        ProxyOracleGovernanceNs::Create(a) => {
+            ctx.write_with(a.signer.clone(), |auth| a.try_into_spec(auth))
+                .await
+        }
         ProxyOracleGovernanceNs::CreateProposal(a) => proposals::create(ctx, a).await,
         ProxyOracleGovernanceNs::CancelProposal(a) => {
             let governance_id = a.proposal.target.resolve(&ctx).await?;
@@ -299,7 +312,10 @@ async fn proxy_oracle_governance(
 
 async fn redstone(ctx: CliContext, ns: RedstoneNs) -> anyhow::Result<()> {
     match ns {
-        RedstoneNs::Create(a) => ctx.write(a.signer.clone(), a.try_into_spec()?).await,
+        RedstoneNs::Create(a) => {
+            ctx.write_with(a.signer.clone(), |auth| a.try_into_spec(auth))
+                .await
+        }
         RedstoneNs::GetConfig(a) => ctx.read(a.into_spec()).await,
         RedstoneNs::ReadPriceData(a) => ctx.read(a.into_spec()).await,
         RedstoneNs::ListRole(a) => ctx.read(a.into_spec()).await,

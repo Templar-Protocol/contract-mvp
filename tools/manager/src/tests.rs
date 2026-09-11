@@ -1,10 +1,10 @@
 use std::sync::Mutex;
 
-use clap::{CommandFactory, Parser};
+use clap::{error::ErrorKind, CommandFactory, Parser};
 
 use super::cli::{Cli, Command};
 use super::commands::proxy_oracle::{CreateProposal, ProxyOracleGovernanceNs, ProxyOracleNs};
-use super::commands::signer::PrintFormat;
+use super::commands::signer::{Authorization, Mode, PrintFormat, SignerArgs};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -132,6 +132,23 @@ const CREDS: [&str; 4] = [
     TEST_SECRET_KEY,
 ];
 
+/// The authorization the parsed credentials select; a parse test's inputs
+/// are valid by construction.
+fn authorized(signer: &SignerArgs) -> Authorization {
+    Authorization::try_from(signer).expect("parsed credentials resolve")
+}
+
+/// Clap's metadata for one of `write`'s flags, by field id.
+fn write_arg(id: &str) -> clap::Arg {
+    Cli::command()
+        .find_subcommand("write")
+        .expect("write is a subcommand")
+        .get_arguments()
+        .find(|arg| arg.get_id() == id)
+        .unwrap_or_else(|| panic!("write has no `{id}` flag"))
+        .clone()
+}
+
 fn try_parse_write<'a>(args: impl IntoIterator<Item = &'a str>) -> Result<Cli, clap::Error> {
     Cli::try_parse_from(
         [
@@ -186,7 +203,7 @@ fn parses_write_fallback_with_json() {
         super::cli::Command::Write(call) => {
             assert_eq!(call.call.method, "registry.removeVersion");
             assert!(call.call.json.is_some());
-            call.signer
+            authorized(&call.signer)
                 .public_key()
                 .expect("credentials should resolve");
         }
@@ -201,17 +218,8 @@ fn parses_write_fallback_with_json() {
 /// whenever the developer's environment happens to set `PYTH_LAZER_API_KEY`.
 #[test]
 fn write_fallback_does_not_require_a_lazer_key() {
-    let write = Cli::command()
-        .find_subcommand("write")
-        .expect("write is a subcommand")
-        .clone();
-    let api_key = write
-        .get_arguments()
-        .find(|arg| arg.get_id() == "pyth_lazer_api_key")
-        .expect("write flattens the oracle source flags");
-
     assert!(
-        !api_key.is_required_set(),
+        !write_arg("pyth_lazer_api_key").is_required_set(),
         "--pyth-lazer-api-key must not be required by `write`"
     );
 }
@@ -262,42 +270,82 @@ fn no_argument_pairs_an_env_source_with_a_conflict() {
     walk(&Cli::command(), "tmplrmgr");
 }
 
-#[test]
-fn write_requires_secret_key_or_print() {
-    // Omitting both execution credentials and plan mode is a parse error, so no
-    // build or network work is reachable.
-    let result = with_cleared_credential_env(|| try_parse_write(["--signer-id", "dao.near"]));
-    let error = result.expect_err("a write needs --secret-key or --print");
+fn in_process() -> Mode {
+    Mode::InProcess(Box::new(TEST_SECRET_KEY.parse().expect("valid secret")))
+}
+
+/// Every way a write can be authorized, by flags and by an ambient `SECRET_KEY`.
+/// The environment is set explicitly per row: an ambient value would otherwise
+/// decide the rows that supply none.
+#[rstest::rstest]
+#[case::nothing(&[], None, Err(ErrorKind::MissingRequiredArgument))]
+#[case::the_default_backend_named_without_a_key(
+    &["--sign-with", "secret-key"], None, Err(ErrorKind::MissingRequiredArgument)
+)]
+#[case::secret_key_flag(&["--secret-key", TEST_SECRET_KEY], None, Ok(in_process()))]
+#[case::secret_key_env(&[], Some(TEST_SECRET_KEY), Ok(in_process()))]
+#[case::the_default_backend_named_with_a_flag(
+    &["--sign-with", "secret-key", "--secret-key", TEST_SECRET_KEY], None, Ok(in_process())
+)]
+#[case::the_default_backend_named_with_env(
+    &["--sign-with", "secret-key"], Some(TEST_SECRET_KEY), Ok(in_process())
+)]
+#[case::print_alone(&["--print", "json"], None, Ok(Mode::Plan(PrintFormat::Json)))]
+#[case::print_with_an_unused_flag(
+    &["--print", "sputnik", "--secret-key", TEST_SECRET_KEY], None, Ok(Mode::Plan(PrintFormat::Sputnik))
+)]
+// ENG-692: an ambient `SECRET_KEY` is extremely common and must not block a plan.
+#[case::print_with_an_unused_env(
+    &["--print", "json"], Some(TEST_SECRET_KEY), Ok(Mode::Plan(PrintFormat::Json))
+)]
+#[case::keychain_alone(&["--sign-with", "keychain"], None, Ok(Mode::Keychain))]
+#[case::keychain_with_an_unused_env(
+    &["--sign-with", "keychain"], Some(TEST_SECRET_KEY), Ok(Mode::Keychain)
+)]
+#[case::keychain_with_print(
+    &["--sign-with", "keychain", "--print", "json"], None, Err(ErrorKind::ArgumentConflict)
+)]
+#[case::the_default_backend_with_print(
+    &["--sign-with", "secret-key", "--print", "json"], None, Err(ErrorKind::ArgumentConflict)
+)]
+fn write_authorization_matrix(
+    #[case] flags: &[&str],
+    #[case] ambient_secret: Option<&str>,
+    #[case] expected: Result<Mode, ErrorKind>,
+) {
+    let result = with_credential_env(ambient_secret, || {
+        try_parse_write(
+            ["--signer-id", "dao.near"]
+                .into_iter()
+                .chain(flags.iter().copied()),
+        )
+    });
+
+    let actual = result.map(|cli| {
+        let Command::Write(call) = cli.command else {
+            panic!("expected Write variant");
+        };
+        authorized(&call.signer)
+    });
     assert_eq!(
-        error.kind(),
-        clap::error::ErrorKind::MissingRequiredArgument
+        actual
+            .as_ref()
+            .map(Authorization::mode)
+            .map_err(clap::Error::kind),
+        expected.as_ref().map_err(|kind| *kind),
+        "{actual:?}"
     );
 }
 
-/// The whole point of `--sign-with`: naming a backend that holds the key
-/// elsewhere must satisfy the credential requirement with nothing in the
-/// environment. Credentials are cleared so an ambient `SECRET_KEY` cannot make
-/// this pass for the wrong reason.
 #[test]
-fn write_with_an_external_backend_needs_no_secret_key() {
-    let result = with_cleared_credential_env(|| {
-        try_parse_write(["--signer-id", "dao.near", "--sign-with", "keychain"])
-    });
+fn help_lists_every_signing_backend() {
+    let backends = write_arg("sign_with")
+        .get_possible_values()
+        .iter()
+        .map(|value| value.get_name().to_owned())
+        .collect::<Vec<_>>();
 
-    result.expect("--sign-with keychain should satisfy the credential requirement");
-}
-
-/// `--sign-with` names only external backends. `secret-key` is not one, so it
-/// cannot be typed — an invocation that would parse while supplying no
-/// credential is unrepresentable rather than merely discouraged.
-#[test]
-fn sign_with_cannot_name_the_in_process_backend() {
-    let error = with_cleared_credential_env(|| {
-        try_parse_write(["--signer-id", "dao.near", "--sign-with", "secret-key"])
-    })
-    .expect_err("`secret-key` is not a --sign-with backend");
-
-    assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+    assert_eq!(backends, ["secret-key", "keychain"]);
 }
 
 /// A supplied `--public-key` must never become the full access key on a new
@@ -305,7 +353,7 @@ fn sign_with_cannot_name_the_in_process_backend() {
 /// of the account to a key the operator does not have.
 #[test]
 fn public_key_cannot_override_the_signing_key() {
-    let cli = with_cleared_credential_env(|| {
+    let cli = with_credential_env(None, || {
         try_parse_write([
             "--signer-id",
             "signer.testnet",
@@ -320,8 +368,7 @@ fn public_key_cannot_override_the_signing_key() {
     let Command::Write(call) = cli.command else {
         panic!("expected Write variant")
     };
-    let error = call
-        .signer
+    let error = authorized(&call.signer)
         .public_key()
         .expect_err("a contradicting --public-key must not be honored");
 
@@ -331,75 +378,9 @@ fn public_key_cannot_override_the_signing_key() {
     );
 }
 
-/// An ambient `SECRET_KEY` is extremely common. It must not break the documented
-/// `--sign-with keychain --public-key …` flow, whose backend ignores it.
-#[test]
-fn an_ambient_secret_does_not_block_an_external_backend() {
-    let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
-    let original = std::env::var_os("SECRET_KEY");
-    std::env::set_var("SECRET_KEY", TEST_SECRET_KEY);
-
-    let result = try_parse_write([
-        "--signer-id",
-        "dao.near",
-        "--sign-with",
-        "keychain",
-        "--public-key",
-        "ed25519:5TMKtTtD5uuMF28ovo7vVge7oAu58eXjySJWTrwcEB5w",
-    ]);
-
-    restore_env("SECRET_KEY", original);
-    result.expect("an ignored ambient secret must not fail parsing");
-}
-
-#[test]
-fn write_command_accepts_print_without_secret() {
-    let result = with_cleared_credential_env(|| {
-        try_parse_write(["--signer-id", "dao.near", "--print", "sputnik"])
-    });
-    let cli = result.expect("plan-only write should parse without a secret");
-    let Command::Write(call) = cli.command else {
-        panic!("expected Write variant");
-    };
-    assert_eq!(call.signer.print(), Some(PrintFormat::Sputnik));
-}
-
-#[test]
-fn print_accepts_an_explicit_secret_key() {
-    let cli = try_parse_write([
-        "--signer-id",
-        "dao.near",
-        "--print",
-        "json",
-        "--secret-key",
-        TEST_SECRET_KEY,
-    ])
-    .expect("plan-only write should accept an unused credential");
-
-    let Command::Write(call) = cli.command else {
-        panic!("expected Write variant");
-    };
-    assert_eq!(call.signer.print(), Some(PrintFormat::Json));
-}
-
-#[test]
-fn print_accepts_a_secret_key_from_environment() {
-    let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
-    let original_secret = std::env::var_os("SECRET_KEY");
-    std::env::set_var("SECRET_KEY", TEST_SECRET_KEY);
-    let result = try_parse_write(["--signer-id", "dao.near", "--print", "json"]);
-    restore_env("SECRET_KEY", original_secret);
-
-    let cli = result.expect("an ambient secret must not block a plan-only write");
-    let Command::Write(call) = cli.command else {
-        panic!("expected Write variant");
-    };
-    assert_eq!(call.signer.print(), Some(PrintFormat::Json));
-}
-
 #[test]
 fn public_key_is_not_a_credential() {
-    let error = with_cleared_credential_env(|| {
+    let error = with_credential_env(None, || {
         try_parse_write([
             "--signer-id",
             "signer.testnet",
@@ -409,10 +390,7 @@ fn public_key_is_not_a_credential() {
     })
     .expect_err("--public-key names a key, it does not authorize a write");
 
-    assert_eq!(
-        error.kind(),
-        clap::error::ErrorKind::MissingRequiredArgument
-    );
+    assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
     assert!(
         error.to_string().contains("--secret-key"),
         "the error should name the missing credential: {error}"
@@ -433,7 +411,7 @@ fn read_command_rejects_credentials() {
     ])
     .expect_err("credentials on a read should fail to parse");
 
-    assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+    assert_eq!(error.kind(), ErrorKind::UnknownArgument);
 }
 
 /// Deliberately not a parse error. Clap validates an env value whatever else was
@@ -464,7 +442,9 @@ fn signer_env_satisfies_write_credentials() {
         let cli = try_parse_write([]).map_err(|error| anyhow::anyhow!(error.to_string()))?;
 
         match cli.command {
-            super::cli::Command::Write(call) => call.signer.public_key().map(|_| ()),
+            super::cli::Command::Write(call) => Authorization::try_from(&call.signer)?
+                .public_key()
+                .map(|_| ()),
             _ => anyhow::bail!("expected Write variant"),
         }
     })();
@@ -475,14 +455,17 @@ fn signer_env_satisfies_write_credentials() {
     result.expect("env-provided credentials should satisfy a write command");
 }
 
-/// Run `f` with ambient signer credentials cleared and environment mutation
-/// serialized, then restore the original values.
-fn with_cleared_credential_env<T>(f: impl FnOnce() -> T) -> T {
+/// Run `f` with `SIGNER_ID` cleared and `SECRET_KEY` set to exactly `secret`,
+/// environment mutation serialized, then restore the original values.
+fn with_credential_env<T>(secret: Option<&str>, f: impl FnOnce() -> T) -> T {
     let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
     let original_signer = std::env::var_os("SIGNER_ID");
     let original_secret = std::env::var_os("SECRET_KEY");
     std::env::remove_var("SIGNER_ID");
-    std::env::remove_var("SECRET_KEY");
+    match secret {
+        Some(secret) => std::env::set_var("SECRET_KEY", secret),
+        None => std::env::remove_var("SECRET_KEY"),
+    }
     let result = f();
     restore_env("SIGNER_ID", original_signer);
     restore_env("SECRET_KEY", original_secret);
@@ -501,8 +484,5 @@ fn read_fallback_rejects_missing_json() {
     let error = Cli::try_parse_from(["tmplrmgr", "read", "account.get"])
         .expect_err("read fallback should require --json or --json-file");
 
-    assert_eq!(
-        error.kind(),
-        clap::error::ErrorKind::MissingRequiredArgument
-    );
+    assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
 }

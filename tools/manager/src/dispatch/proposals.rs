@@ -11,6 +11,7 @@ use templar_gateway_methods_spec::proxy_oracle_governance as gov;
 use templar_gateway_types::{common::WriteOperationResult, ManagedAccountId};
 
 use crate::commands::proxy_oracle::{CreateProposal, ExecuteProposalArgs};
+use crate::commands::signer::{Authorization, Mode};
 use crate::context::{print_json, CliContext};
 
 /// Plan or create a governance proposal. Resolves the proposal id (fetching the
@@ -21,15 +22,14 @@ use crate::context::{print_json, CliContext};
 /// proposal's TTL to elapse before executing it.
 pub(super) async fn create(ctx: CliContext, mut args: CreateProposal) -> anyhow::Result<()> {
     let execute_when_ready = args.execute_when_ready();
-    let signer_args = args.signer.clone();
+    let authorization = Authorization::try_from(&args.signer)?;
     let preflight = args.preflight.clone();
     let requires_upgrade_preflight = args.requires_upgrade_preflight();
     let governance_id = args.target.resolve(&ctx).await?;
 
     // An upgrade proposal is gated before it is even queued, so a deployment that cannot survive
     // the new code is caught while the fix is still cheap.
-    let preflight_runs =
-        requires_upgrade_preflight && preflight.runs(signer_args.print().is_some());
+    let preflight_runs = requires_upgrade_preflight && preflight.runs(authorization.mode());
     if preflight_runs {
         super::upgrade_preflight::gate_governed_oracle(&ctx, &governance_id, &preflight).await?;
     }
@@ -57,11 +57,11 @@ pub(super) async fn create(ctx: CliContext, mut args: CreateProposal) -> anyhow:
     };
 
     let create_spec = args.try_into_spec(governance_id.clone(), id)?;
-    if signer_args.print().is_some() {
-        return ctx.write(signer_args, create_spec).await;
+    if let Mode::Plan(_) = authorization.mode() {
+        return ctx.write_authorized(authorization, create_spec).await;
     }
 
-    let (signer, client) = ctx.signing_client_for(&signer_args).await?;
+    let (signer, client, _) = ctx.signing_client_and_key(authorization).await?;
     let create = client.execute_as(signer.clone(), create_spec).await?;
     // Fail fast if the create reverted, before waiting on / executing a proposal
     // that was never created.
@@ -94,11 +94,12 @@ pub(super) async fn create(ctx: CliContext, mut args: CreateProposal) -> anyhow:
 /// waits for its TTL to elapse, so an early call blocks instead of failing on
 /// an immature proposal.
 pub(super) async fn execute(ctx: CliContext, args: ExecuteProposalArgs) -> anyhow::Result<()> {
+    let authorization = Authorization::try_from(&args.signer)?;
     let governance_id = args.target.resolve(&ctx).await?;
     if args.when_ready() {
         wait_for_maturity(&ctx, &governance_id, args.id()).await?;
     }
-    if args.preflight.runs(args.signer.print().is_some()) {
+    if args.preflight.runs(authorization.mode()) {
         super::upgrade_preflight::gate_queued_upgrade(
             &ctx,
             &governance_id,
@@ -107,7 +108,7 @@ pub(super) async fn execute(ctx: CliContext, args: ExecuteProposalArgs) -> anyho
         )
         .await?;
     }
-    ctx.write(args.signer.clone(), args.into_spec(governance_id))
+    ctx.write_authorized(authorization, args.into_spec(governance_id))
         .await
 }
 

@@ -8,7 +8,7 @@ use templar_gateway_methods_spec::redstone as spec;
 
 use crate::commands::deploy_common::DeployTargetArgs;
 use crate::commands::load_json_file;
-use crate::commands::signer::SignerArgs;
+use crate::commands::signer::{Authorization, SignerArgs};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum Preset {
@@ -46,7 +46,7 @@ pub struct Create {
 }
 
 impl Create {
-    pub fn try_into_spec(self) -> anyhow::Result<spec::Create> {
+    pub fn try_into_spec(self, authorization: &Authorization) -> anyhow::Result<spec::Create> {
         let config: Config = match self.preset {
             Some(Preset::Prod) => config::prod(),
             Some(Preset::Test) => config::test(),
@@ -59,9 +59,8 @@ impl Create {
             }
         };
 
-        let signer = self.signer;
         Ok(spec::Create {
-            target: self.target.resolve(|| signer.public_key())?,
+            target: self.target.resolve(|| authorization.public_key())?,
             config,
             admin_id: self.admin_id,
         })

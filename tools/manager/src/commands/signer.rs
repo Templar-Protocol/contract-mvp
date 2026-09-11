@@ -23,15 +23,44 @@ pub(crate) enum PrintFormat {
     Sputnik,
 }
 
-/// A backend that holds the signing key *outside* this process.
-///
-/// The in-process path is deliberately not a variant: naming it would let
-/// `--sign-with secret-key` satisfy clap's "a backend was chosen" while
-/// supplying no key.
+/// Where the signing key lives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub(crate) enum SigningBackend {
+    /// The key passed as `--secret-key`/`$SECRET_KEY`, held in this process.
+    SecretKey,
     /// The OS keychain, looked up by account id.
     Keychain,
+}
+
+/// How a write is signed: planned for someone else, or here by a named backend.
+///
+/// `Debug` is hand-written to redact the key; do not derive it.
+#[derive(PartialEq, Eq)]
+pub(crate) enum Mode {
+    Plan(PrintFormat),
+    InProcess(Box<SecretKey>),
+    Keychain,
+}
+
+impl fmt::Debug for Mode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Plan(format) => f.debug_tuple("Plan").field(format).finish(),
+            Self::InProcess(_) => f.debug_tuple("InProcess").field(&REDACTED).finish(),
+            Self::Keychain => f.write_str("Keychain"),
+        }
+    }
+}
+
+/// The account authorizing a write and how the write is signed, resolved once
+/// from [`SignerArgs`] per invocation.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Authorization {
+    account_id: ManagedAccountId,
+    /// The key the operator asserted via `--public-key`, unvalidated: only a
+    /// resolved signer can check it, so the caller that resolves must.
+    asserted_public_key: Option<CliPublicKey>,
+    mode: Mode,
 }
 
 /// The account authorizing a write and either its execution credential or its
@@ -43,14 +72,13 @@ pub struct SignerArgs {
     /// Account that signs the transaction, or the DAO account that will execute a plan.
     #[arg(long, env = "SIGNER_ID", value_name = "ACCOUNT_ID")]
     signer_id: AccountId,
-    /// Hold the signing key outside this process. Omit to use `--secret-key`.
+    /// Backend that signs the transaction. Defaults to `secret-key`.
     #[arg(long, value_enum, value_name = "BACKEND", conflicts_with = "print")]
     sign_with: Option<SigningBackend>,
     /// Private key for `--signer-id`, in `ed25519:…` form.
     ///
-    /// Required only for the default `secret-key` backend: naming any
-    /// `--sign-with` backend lifts the requirement, and `--print` needs no
-    /// credential at all.
+    /// Required by the `secret-key` backend, named or defaulted; other backends
+    /// and `--print` need no credential.
     ///
     /// Held as text and parsed on use. Clap validates an env value during
     /// parsing whatever else was passed, and `SECRET_KEY` is a name other tools
@@ -61,9 +89,8 @@ pub struct SignerArgs {
         env = "SECRET_KEY",
         hide_env_values = true,
         value_name = "SECRET_KEY",
-        // `--sign-with` names only external backends, so its presence always
-        // means some other credential source was chosen.
         required_unless_present_any = ["print", "sign_with"],
+        required_if_eq("sign_with", "secret-key"),
     )]
     secret_key: Option<String>,
     /// Plan the write without executing it, then print the selected representation.
@@ -94,25 +121,12 @@ impl SignerArgs {
         ManagedAccountId::from(self.signer_id.clone())
     }
 
-    /// The key the operator *asserted* via `--public-key`, unvalidated: only a
-    /// resolved signer can check it, so the caller that resolves must.
-    pub const fn asserted_public_key(&self) -> Option<CliPublicKey> {
-        self.public_key
-    }
-
-    /// The requested plan-only output format.
-    pub const fn print(&self) -> Option<PrintFormat> {
-        self.print
-    }
-
-    /// The warning for a credential the selected mode will not use.
-    pub(crate) fn ignored_credential_warning(&self) -> Option<String> {
-        let mode = match (self.print, self.sign_with) {
-            (Some(_), _) => "--print only plans the write, so nothing is signed",
-            (None, Some(SigningBackend::Keychain)) => {
-                "--sign-with keychain signs with the key the keychain holds"
-            }
-            (None, None) => return None,
+    /// The warning for a credential `mode` will not use.
+    fn ignored_credential_warning(&self, mode: &Mode) -> Option<String> {
+        let mode = match mode {
+            Mode::Plan(_) => "--print only plans the write, so nothing is signed",
+            Mode::Keychain => "--sign-with keychain signs with the key the keychain holds",
+            Mode::InProcess(_) => return None,
         };
         // Presence only: nothing derived from the key itself may reach a log.
         self.secret_key.is_some().then(|| {
@@ -123,65 +137,93 @@ impl SignerArgs {
         })
     }
 
-    /// The signer's public key, granted full access on accounts a deploy
-    /// creates. Only the in-process backend derives it locally.
-    pub fn public_key(&self) -> anyhow::Result<PublicKey> {
-        // The in-process backend derives from the key it will actually sign
-        // with. Returning a supplied `--public-key` here would grant a full
-        // access key on the new account to a key the signer does not hold,
-        // while the transaction is signed by the secret — so a contradicting
-        // value is an error, not an override.
-        if self.sign_with.is_none() && self.print.is_none() {
-            let derived = PublicKey::from(self.secret()?.public_key());
-            if let Some(supplied) = &self.public_key {
-                anyhow::ensure!(
-                    PublicKey::from(*supplied) == derived,
-                    "--public-key names a different key than --secret-key signs with. \
-                     The new account would grant full access to a key you do not hold; \
-                     drop --public-key to use the signer's own."
-                );
-            }
-            return Ok(derived);
-        }
+    /// The source text never reaches the error.
+    fn secret(&self) -> anyhow::Result<SecretKey> {
+        self.secret_key
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("missing --secret-key"))?
+            .parse()
+            .map_err(|_| anyhow::anyhow!("--secret-key/$SECRET_KEY is not a valid `ed25519:…` key"))
+    }
+}
 
-        if let Some(public_key) = &self.public_key {
-            return Ok(PublicKey::from(*public_key));
+impl TryFrom<&SignerArgs> for Authorization {
+    type Error = anyhow::Error;
+
+    /// The one place plan mode and the backend are decided; warns here, once,
+    /// about a credential the chosen mode will not use.
+    fn try_from(args: &SignerArgs) -> anyhow::Result<Self> {
+        let backend = args.sign_with.unwrap_or(SigningBackend::SecretKey);
+        let mode = match (args.print, backend) {
+            (Some(format), _) => Mode::Plan(format),
+            (None, SigningBackend::SecretKey) => Mode::InProcess(Box::new(args.secret()?)),
+            (None, SigningBackend::Keychain) => Mode::Keychain,
+        };
+        if let Some(warning) = args.ignored_credential_warning(&mode) {
+            tracing::warn!("{warning}");
         }
-        if self.print.is_some() {
-            anyhow::bail!(
-                "--public-key is required with --print for writes that embed the signer's key. \
-                 --secret-key/$SECRET_KEY cannot stand in: a plan is signed by whoever executes it."
-            );
-        }
-        if self.sign_with.is_some() {
-            anyhow::bail!(
-                "--public-key is required with --sign-with for writes that embed the signer's key"
-            );
-        }
-        Ok(PublicKey::from(self.secret()?.public_key()))
+        Ok(Self {
+            account_id: args.account_id(),
+            asserted_public_key: args.public_key,
+            mode,
+        })
+    }
+}
+
+impl Authorization {
+    /// The signing account.
+    pub(crate) const fn account_id(&self) -> &ManagedAccountId {
+        &self.account_id
+    }
+
+    pub(crate) const fn mode(&self) -> &Mode {
+        &self.mode
+    }
+
+    /// The signer's public key, granted full access on accounts a deploy
+    /// creates. Only the in-process backend derives it locally; the others
+    /// need `--public-key`.
+    pub(crate) fn public_key(&self) -> anyhow::Result<PublicKey> {
+        let asserted = self.asserted_public_key.map(PublicKey::from);
+        let required_with = match &self.mode {
+            Mode::InProcess(secret) => {
+                let derived = PublicKey::from(secret.public_key());
+                // A contradicting --public-key is an error, not an override.
+                if let Some(supplied) = asserted {
+                    anyhow::ensure!(
+                        supplied == derived,
+                        "--public-key names a different key than --secret-key signs with. \
+                         The new account would grant full access to a key you do not hold; \
+                         drop --public-key to use the signer's own."
+                    );
+                }
+                return Ok(derived);
+            }
+            Mode::Plan(_) => {
+                "--print for writes that embed the signer's key. \
+                 --secret-key/$SECRET_KEY cannot stand in: a plan is signed by whoever executes it"
+            }
+            Mode::Keychain => "--sign-with for writes that embed the signer's key",
+        };
+        asserted.ok_or_else(|| anyhow::anyhow!("--public-key is required with {required_with}"))
     }
 
     /// The signing account's key as a gateway nonce lane, and the key that lane
-    /// will sign with.
+    /// will sign with — checked against `--public-key` when one was asserted.
     ///
     /// Async because the keychain backend discovers the account's keys on chain
     /// before matching them against the OS keystore.
-    pub async fn resolve(
-        &self,
+    pub(crate) async fn resolve(
+        self,
         network: &NetworkConfig,
     ) -> anyhow::Result<(PooledSigner, CliPublicKey)> {
-        if self.print.is_some() {
-            anyhow::bail!("--print is not supported for this orchestrated write");
-        }
-        if let Some(warning) = self.ignored_credential_warning() {
-            tracing::warn!("{warning}");
-        }
-
-        let signer = match self.sign_with {
-            None => Signer::from_secret_key(self.secret()?.clone())
-                .context("build a signer from --secret-key")?,
-            Some(SigningBackend::Keychain) => {
-                Signer::from_keystore_with_search_for_keys(self.signer_id.clone(), network)
+        let signer = match self.mode {
+            Mode::Plan(_) => anyhow::bail!("--print is not supported for this orchestrated write"),
+            Mode::InProcess(secret) => {
+                Signer::from_secret_key(*secret).context("build a signer from --secret-key")?
+            }
+            Mode::Keychain => {
+                Signer::from_keystore_with_search_for_keys(self.account_id.0.clone(), network)
                     .await
                     .context("find a usable key for this account in the OS keychain")?
             }
@@ -192,25 +234,27 @@ impl SignerArgs {
             .await
             .context("ask the signing backend which key it will sign with")?;
 
+        // A deploy embeds this key as the full access key on the account it
+        // creates, and an external backend cannot validate it before resolving.
+        if let Some(asserted) = self.asserted_public_key {
+            anyhow::ensure!(
+                asserted == public_key,
+                "--public-key is `{asserted}`, but `{}` will sign with \
+                 `{public_key}`. A deploy embeds `--public-key` as the full access \
+                 key on the account it creates, so this would hand control to a \
+                 key you do not hold. Drop --public-key to use the signing key, \
+                 or pass the one the backend holds.",
+                *self.account_id,
+            );
+        }
+
         // Both backends produce a single-key signer: `Signer::new` seeds its
         // pool with one entry, the keychain's first matching key.
-        let pooled = PooledSigner::from_signer(self.account_id(), signer)
+        let pooled = PooledSigner::from_signer(self.account_id, signer)
             .await
             .context("register the signing key as a gateway nonce lane")?;
 
         Ok((pooled, public_key))
-    }
-
-    /// Both callers reject print mode before reaching here, so this only has to
-    /// account for a credential that clap left absent.
-    ///
-    /// The source text never reaches the error.
-    fn secret(&self) -> anyhow::Result<SecretKey> {
-        self.secret_key
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("missing --secret-key"))?
-            .parse()
-            .map_err(|_| anyhow::anyhow!("--secret-key/$SECRET_KEY is not a valid `ed25519:…` key"))
     }
 }
 
@@ -280,7 +324,7 @@ mod tests {
 
     const SECRET: &str = "ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q";
 
-    #[derive(Parser)]
+    #[derive(Parser, Debug)]
     struct Harness {
         #[command(flatten)]
         signer: SignerArgs,
@@ -290,6 +334,23 @@ mod tests {
     /// this only satisfies the signature.
     fn offline_network() -> NetworkConfig {
         NetworkConfigBuilder::new(Network::Testnet).build()
+    }
+
+    /// Built rather than parsed: an ambient `SECRET_KEY` would otherwise decide
+    /// the outcome of the cases that supply none.
+    fn signer_args(
+        signer_id: &str,
+        sign_with: Option<SigningBackend>,
+        secret_key: Option<&str>,
+        print: Option<PrintFormat>,
+    ) -> SignerArgs {
+        SignerArgs {
+            signer_id: signer_id.parse().expect("valid account"),
+            sign_with,
+            secret_key: secret_key.map(str::to_owned),
+            print,
+            public_key: None,
+        }
     }
 
     #[test]
@@ -318,6 +379,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn authorization_debug_redacts_secret_key() {
+        let signer = signer_args("signer.testnet", None, Some(SECRET), None);
+        let rendered = format!("{:?}", Authorization::try_from(&signer).expect("resolves"));
+        assert!(
+            !rendered.contains(SECRET),
+            "secret leaked in Debug: {rendered}"
+        );
+        assert!(
+            rendered.contains(REDACTED),
+            "no redaction marker: {rendered}"
+        );
+    }
+
     /// `SECRET_KEY` is a name other tools use. Parsing it eagerly meant an
     /// unrelated ambient value failed every write, including the ones that never
     /// read it.
@@ -334,6 +409,13 @@ mod tests {
         ])
         .expect("the keychain backend never reads the secret");
 
+        assert_eq!(
+            Authorization::try_from(&harness.signer)
+                .expect("the keychain backend must not parse the unused credential")
+                .mode(),
+            &Mode::Keychain
+        );
+
         let error = harness
             .signer
             .secret()
@@ -349,29 +431,29 @@ mod tests {
 
     /// Print mode wins over `--sign-with`, so accepting both silently ignored
     /// the backend the operator named.
-    #[test]
-    fn a_backend_cannot_be_named_alongside_print() {
-        assert!(
-            Harness::try_parse_from([
-                "tmplrmgr",
-                "--signer-id",
-                "signer.testnet",
-                "--sign-with",
-                "keychain",
-                "--print",
-                "json",
-            ])
-            .is_err(),
-            "print mode signs nothing, so a backend is a contradiction"
-        );
+    #[rstest::rstest]
+    #[case::keychain("keychain")]
+    #[case::secret_key("secret-key")]
+    fn a_backend_cannot_be_named_alongside_print(#[case] backend: &str) {
+        let error = Harness::try_parse_from([
+            "tmplrmgr",
+            "--signer-id",
+            "signer.testnet",
+            "--sign-with",
+            backend,
+            "--print",
+            "json",
+        ])
+        .expect_err("print mode signs nothing, so a backend is a contradiction");
+
+        assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
     }
 
-    /// Built rather than parsed: an ambient `SECRET_KEY` would otherwise decide
-    /// the outcome of the cases that supply none.
     #[rstest::rstest]
     #[case::plan_ignores_it(Some(PrintFormat::Json), None, Some(SECRET), true)]
     #[case::keychain_ignores_it(None, Some(SigningBackend::Keychain), Some(SECRET), true)]
     #[case::a_signed_write_uses_it(None, None, Some(SECRET), false)]
+    #[case::the_named_default_uses_it(None, Some(SigningBackend::SecretKey), Some(SECRET), false)]
     #[case::a_plan_without_one(Some(PrintFormat::Json), None, None, false)]
     fn warns_only_for_a_credential_the_mode_will_not_use(
         #[case] print: Option<PrintFormat>,
@@ -379,15 +461,10 @@ mod tests {
         #[case] secret_key: Option<&str>,
         #[case] warns: bool,
     ) {
-        let signer = SignerArgs {
-            signer_id: "signer.testnet".parse().expect("valid account"),
-            sign_with,
-            secret_key: secret_key.map(str::to_owned),
-            print,
-            public_key: None,
-        };
+        let signer = signer_args("signer.testnet", sign_with, secret_key, print);
+        let authorization = Authorization::try_from(&signer).expect("resolves");
 
-        let Some(warning) = signer.ignored_credential_warning() else {
+        let Some(warning) = signer.ignored_credential_warning(authorization.mode()) else {
             assert!(!warns, "an unused credential must not pass silently");
             return;
         };
@@ -401,18 +478,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_in_process_backend_needs_a_parseable_key() {
+        let signer = signer_args("signer.testnet", None, Some("not-a-near-key"), None);
+
+        let error = Authorization::try_from(&signer)
+            .expect_err("an in-process write cannot sign with an unusable key")
+            .to_string();
+
+        assert!(error.contains("not a valid"), "{error}");
+        assert!(!error.contains("not-a-near-key"), "{error}");
+    }
+
     #[tokio::test]
     async fn plan_mode_rejects_credential_resolution() {
-        let signer = SignerArgs {
-            signer_id: "dao.near".parse().expect("valid account"),
-            sign_with: None,
-            secret_key: None,
-            print: Some(PrintFormat::Sputnik),
-            public_key: None,
-        };
+        let signer = signer_args("dao.near", None, None, Some(PrintFormat::Sputnik));
 
         assert_eq!(
-            signer
+            Authorization::try_from(&signer)
+                .expect("a plan resolves without a credential")
                 .resolve(&offline_network())
                 .await
                 // `Signer` is not `Debug`, so discard the Ok value before asserting.
@@ -425,34 +509,76 @@ mod tests {
 
     #[test]
     fn plan_write_that_embeds_a_key_requires_public_key() {
-        let signer = SignerArgs {
-            signer_id: "dao.near".parse().expect("valid account"),
-            sign_with: None,
-            secret_key: None,
-            print: Some(PrintFormat::Json),
-            public_key: None,
-        };
+        let signer = signer_args("dao.near", None, None, Some(PrintFormat::Json));
 
-        assert!(signer
+        assert!(Authorization::try_from(&signer)
+            .expect("a plan resolves without a credential")
             .public_key()
             .expect_err("plan must not invent a public key")
             .to_string()
             .contains("--public-key"));
     }
 
-    #[test]
-    fn execution_public_key_is_derived_from_typed_secret() {
+    /// Naming the default backend must change nothing about how the key is
+    /// derived.
+    #[rstest::rstest]
+    #[case::defaulted(None)]
+    #[case::named(Some(SigningBackend::SecretKey))]
+    fn execution_public_key_is_derived_from_typed_secret(
+        #[case] sign_with: Option<SigningBackend>,
+    ) {
         let secret_key: SecretKey = SECRET.parse().expect("valid secret");
         let expected = PublicKey::from(secret_key.public_key());
+        let signer = signer_args("signer.testnet", sign_with, Some(SECRET), None);
+
+        let derived = Authorization::try_from(&signer)
+            .expect("in-process resolves from the credential")
+            .public_key()
+            .expect("derived public key");
+        assert_eq!(derived, expected);
+    }
+
+    /// Naming the default backend must change nothing about which key signs.
+    #[rstest::rstest]
+    #[case::defaulted(None)]
+    #[case::named(Some(SigningBackend::SecretKey))]
+    #[tokio::test]
+    async fn execution_signs_with_the_typed_secret(#[case] sign_with: Option<SigningBackend>) {
+        let secret_key: SecretKey = SECRET.parse().expect("valid secret");
+        let signer = signer_args("signer.testnet", sign_with, Some(SECRET), None);
+
+        let (pooled, public_key) = Authorization::try_from(&signer)
+            .expect("in-process resolves from the credential")
+            .resolve(&offline_network())
+            .await
+            .expect("the in-process backend resolves offline");
+
+        assert_eq!(public_key, secret_key.public_key());
+        assert_eq!(*pooled.account_id(), signer.account_id());
+    }
+
+    /// The resolved key, not the operator's assertion, is what a deploy embeds
+    /// as the new account's full access key.
+    #[tokio::test]
+    async fn resolve_rejects_an_asserted_key_the_backend_does_not_hold() {
         let signer = SignerArgs {
-            signer_id: "signer.testnet".parse().expect("valid account"),
-            sign_with: None,
-            secret_key: Some(SECRET.to_owned()),
-            print: None,
-            public_key: None,
+            public_key: Some(
+                "ed25519:5TMKtTtD5uuMF28ovo7vVge7oAu58eXjySJWTrwcEB5w"
+                    .parse()
+                    .expect("valid public key"),
+            ),
+            ..signer_args("signer.testnet", None, Some(SECRET), None)
         };
 
-        assert_eq!(signer.public_key().expect("derived public key"), expected);
+        let error = Authorization::try_from(&signer)
+            .expect("in-process resolves from the credential")
+            .resolve(&offline_network())
+            .await
+            .map(|_| ())
+            .expect_err("a key the signer does not hold must not be embedded")
+            .to_string();
+
+        assert!(error.contains("a key you do not hold"), "{error}");
     }
 
     /// The point of the flag: an operator can sign without a key in the
@@ -475,15 +601,10 @@ mod tests {
     /// so writes that embed the signer's key must be told what it is.
     #[test]
     fn external_backend_requires_an_explicit_public_key() {
-        let signer = SignerArgs {
-            signer_id: "signer.testnet".parse().expect("valid account"),
-            sign_with: Some(SigningBackend::Keychain),
-            secret_key: None,
-            print: None,
-            public_key: None,
-        };
+        let signer = signer_args("signer.testnet", Some(SigningBackend::Keychain), None, None);
 
-        assert!(signer
+        assert!(Authorization::try_from(&signer)
+            .expect("the keychain backend resolves without a credential")
             .public_key()
             .expect_err("a device key cannot be derived locally")
             .to_string()

@@ -5,7 +5,7 @@ use templar_common::market::MarketConfiguration;
 use templar_gateway_methods_spec::market as spec;
 
 use crate::commands::deploy_common::DeployTargetArgs;
-use crate::commands::signer::SignerArgs;
+use crate::commands::signer::{Authorization, SignerArgs};
 
 /// Deploy a market from a registered version, granting the signer a full access
 /// key so the operator retains control of the new account.
@@ -27,7 +27,7 @@ struct MarketInitArgs {
 }
 
 impl Create {
-    pub fn try_into_spec(self) -> anyhow::Result<spec::Create> {
+    pub fn try_into_spec(self, authorization: &Authorization) -> anyhow::Result<spec::Create> {
         let file = std::fs::File::open(&self.init_args_file).with_context(|| {
             format!(
                 "open market init args from {}",
@@ -37,9 +37,8 @@ impl Create {
         let init_args: MarketInitArgs =
             serde_json::from_reader(file).context("parse market init args")?;
 
-        let signer = self.signer;
         Ok(spec::Create {
-            target: self.target.resolve(|| signer.public_key())?,
+            target: self.target.resolve(|| authorization.public_key())?,
             configuration: init_args.configuration,
         })
     }
