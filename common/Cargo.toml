@@ -29,10 +29,12 @@ clap = { workspace = true, optional = true }
 near-jsonrpc-client = { workspace = true, optional = true }
 near-primitives = { workspace = true, optional = true }
 sha2.workspace = true
+near-sdk = { workspace = true, default-features = false, features = ["abi"] }
 
 [dev-dependencies]
 rstest.workspace = true
 near-sdk = { workspace = true, features = ["unit-testing"] }
+jsonschema = { version = "0.51.0", default-features = false }
 rand = "0.8"
 
 [lints]

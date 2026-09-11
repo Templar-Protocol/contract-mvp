@@ -12985,6 +12985,7 @@ dependencies = [
  "derive_more 1.0.0",
  "hex",
  "hex-literal",
+ "jsonschema",
  "k256",
  "near-contract-standards",
  "near-jsonrpc-client",

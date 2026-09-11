@@ -11,7 +11,9 @@ pub trait UsageCurve {
 #[near(serializers = [json, borsh])]
 pub enum InterestRateStrategy {
     Linear(Linear),
+    #[cfg_attr(not(target_arch = "wasm32"), schemars(with = "PiecewiseParams"))]
     Piecewise(Piecewise),
+    #[cfg_attr(not(target_arch = "wasm32"), schemars(with = "Exponential2Params"))]
     Exponential2(Exponential2),
 }
 
@@ -246,6 +248,60 @@ mod tests {
     use std::ops::Div;
 
     use templar_primitives::dec;
+
+    #[test]
+    fn schema_matches_serde_wire_forms() {
+        let schema = near_sdk::serde_json::to_value(schemars::schema_for!(InterestRateStrategy))
+            .expect("strategy schema serializes");
+        let validator = jsonschema::draft7::new(&schema).expect("strategy schema is Draft 7");
+        let strategies = [
+            (
+                InterestRateStrategy::linear(Decimal::ZERO, Decimal::ONE)
+                    .expect("valid linear strategy"),
+                near_sdk::serde_json::json!({"Linear":{"base":"0","top":"1"}}),
+            ),
+            (
+                InterestRateStrategy::piecewise(
+                    Decimal::ZERO,
+                    dec!("0.5"),
+                    dec!("0.125"),
+                    dec!("0.5"),
+                )
+                .expect("valid piecewise strategy"),
+                near_sdk::serde_json::json!({"Piecewise":{"base":"0","optimal":"0.5","rate_1":"0.125","rate_2":"0.5"}}),
+            ),
+            (
+                InterestRateStrategy::exponential2(Decimal::ZERO, Decimal::ONE, Decimal::ONE)
+                    .expect("valid exponential strategy"),
+                near_sdk::serde_json::json!({"Exponential2":{"base":"0","top":"1","eccentricity":"1"}}),
+            ),
+        ];
+
+        for (strategy, expected_json) in strategies {
+            let serialized =
+                near_sdk::serde_json::to_value(&strategy).expect("strategy serialization succeeds");
+            assert_eq!(serialized, expected_json);
+            validator
+                .validate(&serialized)
+                .expect("serialized strategy is valid under its schema");
+            assert_eq!(
+                near_sdk::serde_json::from_value::<InterestRateStrategy>(serialized)
+                    .expect("strategy deserialization succeeds"),
+                strategy
+            );
+        }
+
+        for internal_json in [
+            near_sdk::serde_json::json!({"Piecewise":{"params":{"base":"0","optimal":"0.5","rate_1":"0.125","rate_2":"0.5"},"i_negative_rate_2_b":"0.1875"}}),
+            near_sdk::serde_json::json!({"Exponential2":{"params":{"base":"0","top":"1","eccentricity":"1"},"i_factor":"1"}}),
+        ] {
+            validator
+                .validate(&internal_json)
+                .expect_err("internal runtime representation is not schema-valid");
+            near_sdk::serde_json::from_value::<InterestRateStrategy>(internal_json)
+                .expect_err("internal runtime representation is not serde-valid");
+        }
+    }
 
     use super::*;
 
