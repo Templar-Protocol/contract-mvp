@@ -216,6 +216,52 @@ fn write_fallback_does_not_require_a_lazer_key() {
     );
 }
 
+/// ENG-692: clap applies a conflict to an env-sourced value, so an argument
+/// that ends up on either side of one fails whenever the variable happens to be
+/// exported. Both endpoints are checked, since the conflict binds the pair no
+/// matter which of them declares it, as does a group that admits only one
+/// member. `overrides_with` has no public getter and is not covered.
+#[test]
+fn no_argument_pairs_an_env_source_with_a_conflict() {
+    fn walk(command: &clap::Command, path: &str) {
+        let from_env: Vec<&clap::Id> = command
+            .get_arguments()
+            .filter(|arg| arg.get_env().is_some())
+            .map(clap::Arg::get_id)
+            .collect();
+
+        for arg in command.get_arguments() {
+            for conflict in command.get_arg_conflicts_with(arg) {
+                assert!(
+                    arg.get_env().is_none() && !from_env.contains(&conflict.get_id()),
+                    "`{path}` conflicts `{}` with `{}`, and one of them reads an env var",
+                    arg.get_id(),
+                    conflict.get_id(),
+                );
+            }
+        }
+
+        for group in command.get_groups() {
+            if group.clone().is_multiple() {
+                continue;
+            }
+            for member in group.get_args() {
+                assert!(
+                    !from_env.contains(&member),
+                    "`{path}` puts the env-sourced `{member}` in the exclusive group `{}`",
+                    group.get_id(),
+                );
+            }
+        }
+
+        for sub in command.get_subcommands() {
+            walk(sub, &format!("{path} {}", sub.get_name()));
+        }
+    }
+
+    walk(&Cli::command(), "tmplrmgr");
+}
+
 #[test]
 fn write_requires_secret_key_or_print() {
     // Omitting both execution credentials and plan mode is a parse error, so no
@@ -319,8 +365,8 @@ fn write_command_accepts_print_without_secret() {
 }
 
 #[test]
-fn print_conflicts_with_secret_key() {
-    let error = try_parse_write([
+fn print_accepts_an_explicit_secret_key() {
+    let cli = try_parse_write([
         "--signer-id",
         "dao.near",
         "--print",
@@ -328,21 +374,27 @@ fn print_conflicts_with_secret_key() {
         "--secret-key",
         TEST_SECRET_KEY,
     ])
-    .expect_err("plan and execution credentials must be mutually exclusive");
+    .expect("plan-only write should accept an unused credential");
 
-    assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    let Command::Write(call) = cli.command else {
+        panic!("expected Write variant");
+    };
+    assert_eq!(call.signer.print(), Some(PrintFormat::Json));
 }
 
 #[test]
-fn print_conflicts_with_secret_key_from_environment() {
+fn print_accepts_a_secret_key_from_environment() {
     let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
     let original_secret = std::env::var_os("SECRET_KEY");
     std::env::set_var("SECRET_KEY", TEST_SECRET_KEY);
     let result = try_parse_write(["--signer-id", "dao.near", "--print", "json"]);
     restore_env("SECRET_KEY", original_secret);
 
-    let error = result.expect_err("environment secret must conflict with --print");
-    assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    let cli = result.expect("an ambient secret must not block a plan-only write");
+    let Command::Write(call) = cli.command else {
+        panic!("expected Write variant");
+    };
+    assert_eq!(call.signer.print(), Some(PrintFormat::Json));
 }
 
 #[test]

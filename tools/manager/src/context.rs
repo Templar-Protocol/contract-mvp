@@ -140,6 +140,9 @@ impl CliContext {
         Dispatch: PlanWrite<S, GatewayContext>,
     {
         if let Some(format) = signer.print() {
+            if let Some(warning) = signer.ignored_credential_warning() {
+                tracing::warn!("{warning}");
+            }
             let plan = self
                 .client
                 .plan_request(WriteRequest {
@@ -170,6 +173,9 @@ impl CliContext {
         OracleUpdatesDispatch: PlanWrite<S, Ctx>,
     {
         if let Some(format) = signer.print() {
+            if let Some(warning) = signer.ignored_credential_warning() {
+                tracing::warn!("{warning}");
+            }
             let context = layer_sources(GatewayContext::new(self.network.clone())?)?;
             let plan = <OracleUpdatesDispatch as PlanWrite<S, Ctx>>::plan(
                 WriteRequest {

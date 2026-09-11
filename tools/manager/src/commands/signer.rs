@@ -1,5 +1,5 @@
-//! Per-operation signer inputs: clap selects either execution credentials or a
-//! plan-only output format on every write.
+//! Per-operation signer inputs: the account authorizing every write, and either
+//! the credential that signs it or the plan-only output format that replaces it.
 //!
 //! Credentials resolve to a signer rather than a [`SecretKey`], so a backend
 //! holding its key outside this process is expressible.
@@ -35,7 +35,7 @@ pub(crate) enum SigningBackend {
 }
 
 /// The account authorizing a write and either its execution credential or its
-/// plan-only output format. Clap enforces the credential-mode split.
+/// plan-only output format.
 ///
 /// `Debug` is hand-written to redact `secret_key`; do not derive it.
 #[derive(Args, Clone)]
@@ -64,7 +64,6 @@ pub struct SignerArgs {
         // `--sign-with` names only external backends, so its presence always
         // means some other credential source was chosen.
         required_unless_present_any = ["print", "sign_with"],
-        conflicts_with = "print",
     )]
     secret_key: Option<String>,
     /// Plan the write without executing it, then print the selected representation.
@@ -106,6 +105,24 @@ impl SignerArgs {
         self.print
     }
 
+    /// The warning for a credential the selected mode will not use.
+    pub(crate) fn ignored_credential_warning(&self) -> Option<String> {
+        let mode = match (self.print, self.sign_with) {
+            (Some(_), _) => "--print only plans the write, so nothing is signed",
+            (None, Some(SigningBackend::Keychain)) => {
+                "--sign-with keychain signs with the key the keychain holds"
+            }
+            (None, None) => return None,
+        };
+        // Presence only: nothing derived from the key itself may reach a log.
+        self.secret_key.is_some().then(|| {
+            format!(
+                "{mode} for {}; the supplied --secret-key/$SECRET_KEY is ignored.",
+                self.signer_id,
+            )
+        })
+    }
+
     /// The signer's public key, granted full access on accounts a deploy
     /// creates. Only the in-process backend derives it locally.
     pub fn public_key(&self) -> anyhow::Result<PublicKey> {
@@ -132,7 +149,8 @@ impl SignerArgs {
         }
         if self.print.is_some() {
             anyhow::bail!(
-                "--public-key is required with --print for writes that embed the signer's key"
+                "--public-key is required with --print for writes that embed the signer's key. \
+                 --secret-key/$SECRET_KEY cannot stand in: a plan is signed by whoever executes it."
             );
         }
         if self.sign_with.is_some() {
@@ -155,22 +173,14 @@ impl SignerArgs {
         if self.print.is_some() {
             anyhow::bail!("--print is not supported for this orchestrated write");
         }
+        if let Some(warning) = self.ignored_credential_warning() {
+            tracing::warn!("{warning}");
+        }
 
         let signer = match self.sign_with {
             None => Signer::from_secret_key(self.secret()?.clone())
                 .context("build a signer from --secret-key")?,
             Some(SigningBackend::Keychain) => {
-                // Warned, not refused: clap's conflicts fire on env values, so
-                // exclusivity would break the documented keychain flow. The
-                // failure worth preventing is the *silence*.
-                if self.secret_key.is_some() {
-                    eprintln!(
-                        "warning: --sign-with keychain is set, so the supplied \
-                         --secret-key/$SECRET_KEY is ignored; this transaction \
-                         is signed by the key the keychain holds for {}.",
-                        self.signer_id,
-                    );
-                }
                 Signer::from_keystore_with_search_for_keys(self.signer_id.clone(), network)
                     .await
                     .context("find a usable key for this account in the OS keychain")?
@@ -353,6 +363,41 @@ mod tests {
             ])
             .is_err(),
             "print mode signs nothing, so a backend is a contradiction"
+        );
+    }
+
+    /// Built rather than parsed: an ambient `SECRET_KEY` would otherwise decide
+    /// the outcome of the cases that supply none.
+    #[rstest::rstest]
+    #[case::plan_ignores_it(Some(PrintFormat::Json), None, Some(SECRET), true)]
+    #[case::keychain_ignores_it(None, Some(SigningBackend::Keychain), Some(SECRET), true)]
+    #[case::a_signed_write_uses_it(None, None, Some(SECRET), false)]
+    #[case::a_plan_without_one(Some(PrintFormat::Json), None, None, false)]
+    fn warns_only_for_a_credential_the_mode_will_not_use(
+        #[case] print: Option<PrintFormat>,
+        #[case] sign_with: Option<SigningBackend>,
+        #[case] secret_key: Option<&str>,
+        #[case] warns: bool,
+    ) {
+        let signer = SignerArgs {
+            signer_id: "signer.testnet".parse().expect("valid account"),
+            sign_with,
+            secret_key: secret_key.map(str::to_owned),
+            print,
+            public_key: None,
+        };
+
+        let Some(warning) = signer.ignored_credential_warning() else {
+            assert!(!warns, "an unused credential must not pass silently");
+            return;
+        };
+
+        assert!(warns, "the credential this write signs with is not ignored");
+        assert!(warning.contains("--secret-key/$SECRET_KEY"), "{warning}");
+        assert!(warning.contains("signer.testnet"), "{warning}");
+        assert!(
+            !warning.contains(SECRET),
+            "the warning must not echo the credential"
         );
     }
 
