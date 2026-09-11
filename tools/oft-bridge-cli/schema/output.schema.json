@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "tmplr-oft-bridge output envelope v1",
+  "type": "object",
+  "required": ["version", "ok", "status", "command", "effect", "warnings", "transactions"],
+  "properties": {
+    "version": { "const": 1 },
+    "ok": { "type": "boolean" },
+    "status": { "enum": ["ok", "error"] },
+    "command": { "type": "string", "minLength": 1 },
+    "effect": { "type": "string", "minLength": 1 },
+    "data": { "type": "object" },
+    "error": {
+      "type": "object",
+      "required": ["code", "message", "context"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 },
+        "context": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "transactions": { "type": "array", "items": { "type": "object" } }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    { "if": { "properties": { "ok": { "const": true } } }, "then": { "required": ["data"], "not": { "required": ["error"] } } },
+    { "if": { "properties": { "ok": { "const": false } } }, "then": { "required": ["error"], "not": { "required": ["data"] } } }
+  ]
+}

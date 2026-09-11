@@ -1,0 +1,13 @@
+{
+  "name": "@templar/disposable-oft-importer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Minimal importer package pinning @layerzerolabs/oft-evm@4.0.1 for the DisposableOFT wrapper build.",
+  "license": "MIT",
+  "dependencies": {
+    "@layerzerolabs/oft-evm": "4.0.1"
+  },
+  "scripts": {
+    "build": "forge build"
+  }
+}

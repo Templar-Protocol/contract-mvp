@@ -1,0 +1,108 @@
+name: Publish OFT Bridge CLI Image
+
+on:
+  push:
+    tags:
+      - "templar-oft-bridge-cli-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "GHCR image tag to publish"
+        required: true
+        default: "dev"
+        type: string
+      push_latest:
+        description: "Also publish the image as latest"
+        required: false
+        default: false
+        type: boolean
+
+run-name: Publish OFT Bridge CLI image (${{ inputs.tag || github.ref_name }})
+
+concurrency:
+  group: publish-oft-bridge-cli-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    name: Build and push GHCR image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Prepare image metadata
+        id: image
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${INPUT_TAG:-}" ]]; then
+            prefix="templar-oft-bridge-cli-v"
+            if [[ "$GITHUB_REF_NAME" != "$prefix"* ]]; then
+              echo "Ref ${GITHUB_REF_NAME} is not a ${prefix}* tag" >&2
+              exit 1
+            fi
+            INPUT_TAG="${GITHUB_REF_NAME#"$prefix"}"
+          fi
+
+          if [[ ! "$INPUT_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "Invalid Docker tag: $INPUT_TAG" >&2
+            exit 1
+          fi
+
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          image="ghcr.io/${owner}/oft-bridge-cli"
+          short_sha="${GITHUB_SHA::12}"
+
+          {
+            echo "image=${image}"
+            echo "tag=${INPUT_TAG}"
+            echo "sha_tag=sha-${short_sha}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Login to GHCR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io \
+            --username "${GITHUB_ACTOR}" \
+            --password-stdin
+
+      - name: Build image
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          TAG: ${{ steps.image.outputs.tag }}
+          SHA_TAG: ${{ steps.image.outputs.sha_tag }}
+        run: |
+          set -euo pipefail
+          docker build \
+            --file tools/oft-bridge-cli/Dockerfile \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --tag "${IMAGE}:${TAG}" \
+            --tag "${IMAGE}:${SHA_TAG}" \
+            .
+
+      - name: Push image
+        run: |
+          set -euo pipefail
+          docker push "${{ steps.image.outputs.image }}:${{ steps.image.outputs.tag }}"
+          docker push "${{ steps.image.outputs.image }}:${{ steps.image.outputs.sha_tag }}"
+
+      - name: Push latest tag
+        if: ${{ inputs.push_latest }}
+        run: |
+          set -euo pipefail
+          docker tag \
+            "${{ steps.image.outputs.image }}:${{ steps.image.outputs.tag }}" \
+            "${{ steps.image.outputs.image }}:latest"
+          docker push "${{ steps.image.outputs.image }}:latest"

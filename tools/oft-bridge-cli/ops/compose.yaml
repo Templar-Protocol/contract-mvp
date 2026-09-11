@@ -1,0 +1,59 @@
+name: templar-oft-bridge
+
+services:
+  route-monitor:
+    image: "${OFT_BRIDGE_IMAGE:?Set OFT_BRIDGE_IMAGE to a reviewed image digest}"
+    user: "10001:10001"
+    init: true
+    restart: "on-failure"
+    read_only: true
+    network_mode: none
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 0.50
+    stop_grace_period: 15s
+    entrypoint:
+      - /usr/local/bin/oft-monitor-route
+    command:
+      - --loop
+    environment:
+      ROUTE_STATE: "/data/routes/${OFT_ROUTE_NAME:?Set OFT_ROUTE_NAME to the route directory name}"
+      OPERATION_STORE_ROOT: /data/operations
+      MONITOR_INTERVAL_SECONDS: "${MONITOR_INTERVAL_SECONDS:-60}"
+      MONITOR_SUCCESS_MARKER: /tmp/oft-monitor-last-success
+      MONITOR_HEALTH_MAX_AGE_SECONDS: "${MONITOR_HEALTH_MAX_AGE_SECONDS:-300}"
+    volumes:
+      - type: bind
+        source: "${OFT_ROUTES_DIR:?Set OFT_ROUTES_DIR to the absolute durable routes directory}"
+        target: /data/routes
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${OFT_OPERATIONS_DIR:?Set OFT_OPERATIONS_DIR to the absolute durable operation-store directory}"
+        target: /data/operations
+        read_only: true
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test -f /tmp/oft-monitor-last-success &&
+          age=$$(($$(date +%s) - $$(stat -c %Y /tmp/oft-monitor-last-success))) &&
+          test "$$age" -le "$${MONITOR_HEALTH_MAX_AGE_SECONDS}"
+      interval: 30s
+      timeout: 5s
+      retries: 2
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"

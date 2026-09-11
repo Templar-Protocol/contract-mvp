@@ -1,0 +1,38 @@
+[package]
+name = "templar-oft-bridge-cli"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tmplr-oft-bridge"
+path = "src/main.rs"
+
+[dependencies]
+alloy = { workspace = true, features = ["contract", "provider-http", "reqwest-rustls-tls", "rlp", "rpc-types", "signer-keystore", "signer-local"] }
+async-trait.workspace = true
+base64.workspace = true
+clap.workspace = true
+hex.workspace = true
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
+serde.workspace = true
+serde_json.workspace = true
+serde_json_canonicalizer.workspace = true
+sha2.workspace = true
+soroban-client = "0.5.5"
+stellar-baselib = "0.5.6"
+stellar-strkey.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+url.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile = "3.13"
+eth-keystore = "=0.5.0"
+rand = "=0.8.5"
+
+[lints]
+workspace = true
