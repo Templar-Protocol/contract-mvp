@@ -6,7 +6,7 @@ use crate::commands::owner::OwnerNs;
 use crate::commands::proxy_oracle::ProxyOracleGovernanceNs;
 use crate::commands::registry::RegistryNs;
 
-use super::{parse_create_proposal, parse_governance, try_parse_governance, CREDS};
+use super::{authorized, parse_create_proposal, parse_governance, try_parse_governance, CREDS};
 
 const COLLATERAL_PRICE_ID: &str =
     "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
@@ -92,9 +92,11 @@ fn registry_deploy_rejects_invalid_inline_init_args() {
     match cli.command {
         Command::Registry {
             command: RegistryNs::Deploy(cmd),
-        } => cmd
-            .try_into_spec()
-            .expect_err("invalid inline JSON should be rejected"),
+        } => {
+            let authorization = authorized(&cmd.signer);
+            cmd.try_into_spec(&authorization)
+                .expect_err("invalid inline JSON should be rejected")
+        }
         _ => panic!("expected Registry::Deploy"),
     };
 }
@@ -125,7 +127,11 @@ fn registry_deploy_accepts_explicit_inline_null_init_args() {
     let params = match cli.command {
         Command::Registry {
             command: RegistryNs::Deploy(cmd),
-        } => cmd.try_into_spec().expect("deploy should build"),
+        } => {
+            let authorization = authorized(&cmd.signer);
+            cmd.try_into_spec(&authorization)
+                .expect("deploy should build")
+        }
         _ => panic!("expected Registry::Deploy"),
     };
 
@@ -169,7 +175,11 @@ fn registry_deploy_reads_init_args_file() {
     let params = match cli.command {
         Command::Registry {
             command: RegistryNs::Deploy(cmd),
-        } => cmd.try_into_spec().expect("deploy should build"),
+        } => {
+            let authorization = authorized(&cmd.signer);
+            cmd.try_into_spec(&authorization)
+                .expect("deploy should build")
+        }
         _ => panic!("expected Registry::Deploy"),
     };
 

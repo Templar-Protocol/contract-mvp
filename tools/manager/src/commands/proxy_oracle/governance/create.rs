@@ -10,7 +10,7 @@ use templar_proxy_oracle_near_governance_common::GovernancePolicy;
 use crate::commands::deploy_common::DeployTargetArgs;
 use crate::commands::duration::parse_duration;
 use crate::commands::load_json_file;
-use crate::commands::signer::SignerArgs;
+use crate::commands::signer::{Authorization, SignerArgs};
 
 /// Create (deploy-from-registry) a governance contract, building its
 /// `new(proxy_oracle_id, admin_id, policy)` init args from typed flags.
@@ -41,7 +41,7 @@ pub struct GovernanceCreate {
 }
 
 impl GovernanceCreate {
-    pub fn try_into_spec(self) -> anyhow::Result<spec::Create> {
+    pub fn try_into_spec(self, authorization: &Authorization) -> anyhow::Result<spec::Create> {
         let policy: GovernancePolicy = match self.policy_file {
             Some(path) => load_json_file(&path).context("parse GovernancePolicy")?,
             None => {
@@ -49,9 +49,8 @@ impl GovernanceCreate {
             }
         };
 
-        let signer = self.signer;
         Ok(spec::Create {
-            target: self.target.resolve(|| signer.public_key())?,
+            target: self.target.resolve(|| authorization.public_key())?,
             proxy_oracle_id: self.proxy_oracle_id,
             admin_id: self.admin_id,
             policy,

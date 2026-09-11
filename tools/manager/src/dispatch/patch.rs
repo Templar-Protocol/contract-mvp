@@ -19,6 +19,7 @@ use crate::{
     commands::{
         patch::{Apply, Plan},
         registry::STORAGE_AMOUNT_PER_BYTE,
+        signer::Authorization,
     },
     context::CliContext,
     dispatch::patch_state::{fetch_complete_state, RawStateEntry, StateSnapshot},
@@ -92,14 +93,14 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
         plan.schema
     );
     ensure_patch_has_operations(&plan)?;
+    let authorization = Authorization::try_from(&args.signer)?;
     anyhow::ensure!(
-        args.signer.account_id().0 == plan.signer_id,
+        authorization.account_id().0 == plan.signer_id,
         "patch plan expects signer `{}`, but apply uses `{}`",
         plan.signer_id,
-        args.signer.account_id().0,
+        authorization.account_id().0,
     );
-
-    let public_key = args.signer.public_key()?;
+    let public_key = authorization.public_key()?;
     anyhow::ensure!(
         public_key == templar_gateway_types::primitive::PublicKey::from(plan.public_key),
         "patch plan was reviewed for a different signing public key"
@@ -143,7 +144,7 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
         "patch was not sent",
     )?;
     reporter.digest();
-    ctx.write(args.signer, plan.batch).await
+    ctx.write_authorized(authorization, plan.batch).await
 }
 
 fn ensure_patch_signer(

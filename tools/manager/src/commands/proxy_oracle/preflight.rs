@@ -1,6 +1,7 @@
 use clap::{ArgGroup, Args};
 use near_account_id::AccountId;
 
+use crate::commands::signer::Mode;
 use crate::resolve::OracleTarget;
 
 /// Read-only pre-upgrade checks over a deployed proxy oracle's stored state.
@@ -44,9 +45,9 @@ pub struct PreflightArgs {
 }
 
 impl PreflightArgs {
-    /// Whether the preflight should run at all. `print` builds a payload without submitting, so it
+    /// Whether the preflight should run at all. A plan builds a payload without submitting, so it
     /// stays offline.
-    pub(crate) fn runs(&self, printing: bool) -> bool {
-        !self.skip_preflight && !printing
+    pub(crate) fn runs(&self, mode: &Mode) -> bool {
+        !self.skip_preflight && !matches!(mode, Mode::Plan(_))
     }
 }

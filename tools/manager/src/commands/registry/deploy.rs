@@ -3,7 +3,7 @@ use clap::{ArgGroup, Args};
 use templar_gateway_methods_spec::registry as spec;
 
 use crate::commands::deploy_common::DeployTargetArgs;
-use crate::commands::signer::SignerArgs;
+use crate::commands::signer::{Authorization, SignerArgs};
 
 /// Deploy an already-registered contract version to a new account, granting full
 /// access keys (the signer's by default) so the operator retains control.
@@ -32,7 +32,7 @@ pub struct Deploy {
 }
 
 impl Deploy {
-    pub fn try_into_spec(self) -> anyhow::Result<spec::Deploy> {
+    pub fn try_into_spec(self, authorization: &Authorization) -> anyhow::Result<spec::Deploy> {
         // clap's required, mutually-exclusive `init` group guarantees exactly one
         // source is present.
         let init_bytes = match (self.init_args, self.init_args_file) {
@@ -45,9 +45,8 @@ impl Deploy {
                 .with_context(|| format!("read init args from {}", path.display()))?,
             (None, None) => unreachable!("clap requires one of --init-args / --init-args-file"),
         };
-        let signer = self.signer;
         Ok(spec::Deploy {
-            target: self.target.resolve(|| signer.public_key())?,
+            target: self.target.resolve(|| authorization.public_key())?,
             init_args: templar_gateway_types::Base64Bytes(init_bytes),
         })
     }

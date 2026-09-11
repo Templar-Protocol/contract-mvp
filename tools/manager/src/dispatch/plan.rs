@@ -26,6 +26,7 @@ use templar_proxy_oracle_near_common::input::Source;
 use templar_proxy_oracle_near_governance_common::{GovernancePolicy, Operation};
 
 use crate::commands::market::{Apply, Plan};
+use crate::commands::signer::Authorization;
 use crate::context::{print_json, CliContext};
 use crate::report::Reporter;
 use crate::spec::journal::{self, Journal};
@@ -211,7 +212,9 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
     // Resolved once, here, and carried through to the send: the keychain
     // backend discovers keys on chain and may prompt, and a second resolution
     // could hand back a different key than the one checked below.
-    let (signer, client, signing_key) = ctx.signing_client_and_key(&args.signer).await?;
+    let (signer, client, signing_key) = ctx
+        .signing_client_and_key(Authorization::try_from(&args.signer)?)
+        .await?;
 
     // Asked of the backend, not of `--public-key`: checking a grant against
     // the operator's own assertion checks nothing.

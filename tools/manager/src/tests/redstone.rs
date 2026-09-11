@@ -1,7 +1,7 @@
 use clap::Parser;
 use templar_gateway_methods_spec::redstone as spec;
 
-use super::CREDS;
+use super::{authorized, CREDS};
 use crate::cli::{Cli, Command};
 use crate::commands::RedstoneNs;
 
@@ -128,7 +128,10 @@ fn create(version: &str, source: &[&str]) -> anyhow::Result<spec::Create> {
     match cli.command {
         Command::Redstone {
             command: RedstoneNs::Create(a),
-        } => a.try_into_spec(),
+        } => {
+            let authorization = authorized(&a.signer);
+            a.try_into_spec(&authorization)
+        }
         _ => panic!("expected redstone create"),
     }
 }

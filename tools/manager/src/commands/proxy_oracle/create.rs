@@ -3,7 +3,7 @@ use near_account_id::AccountId;
 use templar_gateway_methods_spec::proxy_oracle as spec;
 
 use crate::commands::deploy_common::DeployTargetArgs;
-use crate::commands::signer::SignerArgs;
+use crate::commands::signer::{Authorization, SignerArgs};
 
 /// Deploy a proxy oracle from a registered version, granting the signer a full
 /// access key so the operator retains control of the new account.
@@ -23,10 +23,9 @@ pub struct Create {
 }
 
 impl Create {
-    pub fn try_into_spec(self) -> anyhow::Result<spec::Create> {
-        let signer = self.signer;
+    pub fn try_into_spec(self, authorization: &Authorization) -> anyhow::Result<spec::Create> {
         Ok(spec::Create {
-            target: self.target.resolve(|| signer.public_key())?,
+            target: self.target.resolve(|| authorization.public_key())?,
             owner_id: self.owner_id,
         })
     }

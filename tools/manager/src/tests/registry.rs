@@ -5,7 +5,7 @@ use near_sdk::json_types::Base58CryptoHash;
 use serde_json::json;
 use templar_common::registry::VersionSource;
 
-use super::{CREDS, TEST_SECRET_KEY};
+use super::{authorized, CREDS, TEST_SECRET_KEY};
 use crate::cli::{Cli, Command};
 use crate::commands::registry::RegistryNs;
 
@@ -493,8 +493,9 @@ fn deploy_plan_uses_explicit_public_key() {
         panic!("expected registry deploy");
     };
 
+    let authorization = authorized(&cmd.signer);
     let spec = cmd
-        .try_into_spec()
+        .try_into_spec(&authorization)
         .expect("explicit public key builds spec");
     let keys = spec.target.full_access_keys.expect("full-access keys");
     assert_eq!(keys.len(), 1);
@@ -531,8 +532,9 @@ fn deploy_plan_without_signer_grant_needs_no_public_key() {
         panic!("expected registry deploy");
     };
 
+    let authorization = authorized(&cmd.signer);
     let spec = cmd
-        .try_into_spec()
+        .try_into_spec(&authorization)
         .expect("suppressed signer grant must not resolve a key");
     assert!(
         spec.target
