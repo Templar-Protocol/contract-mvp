@@ -54,7 +54,7 @@ impl fmt::Debug for Mode {
 
 /// The account authorizing a write and how the write is signed, resolved once
 /// from [`SignerArgs`] per invocation.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct Authorization {
     account_id: ManagedAccountId,
     /// The key the operator asserted via `--public-key`, unvalidated: only a
@@ -162,11 +162,19 @@ impl TryFrom<&SignerArgs> for Authorization {
         if let Some(warning) = args.ignored_credential_warning(&mode) {
             tracing::warn!("{warning}");
         }
-        Ok(Self {
+        let authorization = Self {
             account_id: args.account_id(),
             asserted_public_key: args.public_key,
             mode,
-        })
+        };
+        if let Mode::InProcess(secret) = &authorization.mode {
+            ensure_asserted_key_is_held(
+                &authorization.account_id,
+                authorization.asserted_public_key,
+                secret.public_key(),
+            )?;
+        }
+        Ok(authorization)
     }
 }
 
@@ -184,32 +192,21 @@ impl Authorization {
     /// creates. Only the in-process backend derives it locally; the others
     /// need `--public-key`.
     pub(crate) fn public_key(&self) -> anyhow::Result<PublicKey> {
-        let asserted = self.asserted_public_key.map(PublicKey::from);
         let required_with = match &self.mode {
-            Mode::InProcess(secret) => {
-                let derived = PublicKey::from(secret.public_key());
-                // A contradicting --public-key is an error, not an override.
-                if let Some(supplied) = asserted {
-                    anyhow::ensure!(
-                        supplied == derived,
-                        "--public-key names a different key than --secret-key signs with. \
-                         The new account would grant full access to a key you do not hold; \
-                         drop --public-key to use the signer's own."
-                    );
-                }
-                return Ok(derived);
-            }
+            Mode::InProcess(secret) => return Ok(PublicKey::from(secret.public_key())),
             Mode::Plan(_) => {
                 "--print for writes that embed the signer's key. \
                  --secret-key/$SECRET_KEY cannot stand in: a plan is signed by whoever executes it"
             }
             Mode::Keychain => "--sign-with for writes that embed the signer's key",
         };
-        asserted.ok_or_else(|| anyhow::anyhow!("--public-key is required with {required_with}"))
+        self.asserted_public_key
+            .map(PublicKey::from)
+            .ok_or_else(|| anyhow::anyhow!("--public-key is required with {required_with}"))
     }
 
     /// The signing account's key as a gateway nonce lane, and the key that lane
-    /// will sign with — checked against `--public-key` when one was asserted.
+    /// will sign with.
     ///
     /// Async because the keychain backend discovers the account's keys on chain
     /// before matching them against the OS keystore.
@@ -217,13 +214,18 @@ impl Authorization {
         self,
         network: &NetworkConfig,
     ) -> anyhow::Result<(PooledSigner, CliPublicKey)> {
-        let signer = match self.mode {
+        let Self {
+            account_id,
+            asserted_public_key,
+            mode,
+        } = self;
+        let signer = match mode {
             Mode::Plan(_) => anyhow::bail!("--print is not supported for this orchestrated write"),
             Mode::InProcess(secret) => {
                 Signer::from_secret_key(*secret).context("build a signer from --secret-key")?
             }
             Mode::Keychain => {
-                Signer::from_keystore_with_search_for_keys(self.account_id.0.clone(), network)
+                Signer::from_keystore_with_search_for_keys(account_id.0.clone(), network)
                     .await
                     .context("find a usable key for this account in the OS keychain")?
             }
@@ -233,29 +235,38 @@ impl Authorization {
             .get_public_key()
             .await
             .context("ask the signing backend which key it will sign with")?;
-
-        // A deploy embeds this key as the full access key on the account it
-        // creates, and an external backend cannot validate it before resolving.
-        if let Some(asserted) = self.asserted_public_key {
-            anyhow::ensure!(
-                asserted == public_key,
-                "--public-key is `{asserted}`, but `{}` will sign with \
-                 `{public_key}`. A deploy embeds `--public-key` as the full access \
-                 key on the account it creates, so this would hand control to a \
-                 key you do not hold. Drop --public-key to use the signing key, \
-                 or pass the one the backend holds.",
-                *self.account_id,
-            );
-        }
+        // An external backend can only be checked once it says which key it holds.
+        ensure_asserted_key_is_held(&account_id, asserted_public_key, public_key)?;
 
         // Both backends produce a single-key signer: `Signer::new` seeds its
         // pool with one entry, the keychain's first matching key.
-        let pooled = PooledSigner::from_signer(self.account_id, signer)
+        let pooled = PooledSigner::from_signer(account_id, signer)
             .await
             .context("register the signing key as a gateway nonce lane")?;
 
         Ok((pooled, public_key))
     }
+}
+
+/// A deploy embeds `--public-key` as the full access key on the account it
+/// creates, so an asserted key the signer does not hold hands the account to
+/// someone else.
+fn ensure_asserted_key_is_held(
+    account_id: &ManagedAccountId,
+    asserted: Option<CliPublicKey>,
+    held: CliPublicKey,
+) -> anyhow::Result<()> {
+    if let Some(asserted) = asserted {
+        anyhow::ensure!(
+            asserted == held,
+            "--public-key is `{asserted}`, but `{}` will sign with `{held}`. \
+             A deploy embeds `--public-key` as the full access key on the account \
+             it creates, so this would hand control to a key you do not hold. \
+             Drop --public-key to use the signing key, or pass the one the backend holds.",
+            **account_id,
+        );
+    }
+    Ok(())
 }
 
 /// A secret key with no bound account — for teardown flows (e.g. `registry
@@ -557,10 +568,10 @@ mod tests {
         assert_eq!(*pooled.account_id(), signer.account_id());
     }
 
-    /// The resolved key, not the operator's assertion, is what a deploy embeds
-    /// as the new account's full access key.
-    #[tokio::test]
-    async fn resolve_rejects_an_asserted_key_the_backend_does_not_hold() {
+    /// The signing key, not the operator's assertion, is what a deploy embeds
+    /// as the new account's full access key. Caught before any work is done.
+    #[test]
+    fn an_asserted_key_the_signer_does_not_hold_is_rejected() {
         let signer = SignerArgs {
             public_key: Some(
                 "ed25519:5TMKtTtD5uuMF28ovo7vVge7oAu58eXjySJWTrwcEB5w"
@@ -571,10 +582,6 @@ mod tests {
         };
 
         let error = Authorization::try_from(&signer)
-            .expect("in-process resolves from the credential")
-            .resolve(&offline_network())
-            .await
-            .map(|_| ())
             .expect_err("a key the signer does not hold must not be embedded")
             .to_string();
 

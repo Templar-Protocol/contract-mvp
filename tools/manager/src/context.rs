@@ -145,8 +145,7 @@ impl CliContext {
         self.write_authorized(authorization, body).await
     }
 
-    /// [`Self::write`] for a caller that already resolved the authorization,
-    /// to gate a preflight on it.
+    /// [`Self::write`] for a caller that already resolved the authorization.
     pub(crate) async fn write_authorized<S>(
         &self,
         authorization: Authorization,
@@ -191,7 +190,7 @@ impl CliContext {
             let context = layer_sources(GatewayContext::new(self.network.clone())?)?;
             let plan = <OracleUpdatesDispatch as PlanWrite<S, Ctx>>::plan(
                 WriteRequest {
-                    signer_account_id: signer.account_id(),
+                    signer_account_id: authorization.account_id().clone(),
                     idempotency_key: None,
                     body,
                 },

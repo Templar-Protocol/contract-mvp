@@ -93,14 +93,13 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
         plan.schema
     );
     ensure_patch_has_operations(&plan)?;
+    let authorization = Authorization::try_from(&args.signer)?;
     anyhow::ensure!(
-        args.signer.account_id().0 == plan.signer_id,
+        authorization.account_id().0 == plan.signer_id,
         "patch plan expects signer `{}`, but apply uses `{}`",
         plan.signer_id,
-        args.signer.account_id().0,
+        authorization.account_id().0,
     );
-
-    let authorization = Authorization::try_from(&args.signer)?;
     let public_key = authorization.public_key()?;
     anyhow::ensure!(
         public_key == templar_gateway_types::primitive::PublicKey::from(plan.public_key),

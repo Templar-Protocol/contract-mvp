@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::sync::Mutex;
 
 use clap::{error::ErrorKind, CommandFactory, Parser};
@@ -313,7 +314,7 @@ fn write_authorization_matrix(
     #[case] ambient_secret: Option<&str>,
     #[case] expected: Result<Mode, ErrorKind>,
 ) {
-    let result = with_credential_env(ambient_secret, || {
+    let result = with_credential_env(None, ambient_secret, || {
         try_parse_write(
             ["--signer-id", "dao.near"]
                 .into_iter()
@@ -348,39 +349,9 @@ fn help_lists_every_signing_backend() {
     assert_eq!(backends, ["secret-key", "keychain"]);
 }
 
-/// A supplied `--public-key` must never become the full access key on a new
-/// account when the signer holds a different secret — that would hand control
-/// of the account to a key the operator does not have.
-#[test]
-fn public_key_cannot_override_the_signing_key() {
-    let cli = with_credential_env(None, || {
-        try_parse_write([
-            "--signer-id",
-            "signer.testnet",
-            "--secret-key",
-            TEST_SECRET_KEY,
-            "--public-key",
-            "ed25519:5TMKtTtD5uuMF28ovo7vVge7oAu58eXjySJWTrwcEB5w",
-        ])
-    })
-    .expect("clap accepts the pair; the conflict is semantic");
-
-    let Command::Write(call) = cli.command else {
-        panic!("expected Write variant")
-    };
-    let error = authorized(&call.signer)
-        .public_key()
-        .expect_err("a contradicting --public-key must not be honored");
-
-    assert!(
-        error.to_string().contains("a key you do not hold"),
-        "error should say why: {error}"
-    );
-}
-
 #[test]
 fn public_key_is_not_a_credential() {
-    let error = with_credential_env(None, || {
+    let error = with_credential_env(None, None, || {
         try_parse_write([
             "--signer-id",
             "signer.testnet",
@@ -428,52 +399,44 @@ fn an_invalid_secret_key_is_not_a_parse_error() {
     assert!(!rendered.contains(secret), "secret leaked: {rendered}");
 }
 
+/// Scripted/CI usage relies on `SIGNER_ID`/`SECRET_KEY` env sourcing satisfying
+/// the structural credentials with no explicit flags.
 #[test]
 fn signer_env_satisfies_write_credentials() {
-    // Scripted/CI usage relies on SIGNER_ID/SECRET_KEY env sourcing satisfying the
-    // structural credentials with no explicit flags.
-    let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
-    let original_signer = std::env::var_os("SIGNER_ID");
-    let original_secret = std::env::var_os("SECRET_KEY");
-    std::env::set_var("SIGNER_ID", "signer.testnet");
-    std::env::set_var("SECRET_KEY", TEST_SECRET_KEY);
+    let cli = with_credential_env(Some("signer.testnet"), Some(TEST_SECRET_KEY), || {
+        try_parse_write([])
+    })
+    .expect("env-provided credentials should satisfy a write command");
 
-    let result = (|| {
-        let cli = try_parse_write([]).map_err(|error| anyhow::anyhow!(error.to_string()))?;
-
-        match cli.command {
-            super::cli::Command::Write(call) => Authorization::try_from(&call.signer)?
-                .public_key()
-                .map(|_| ()),
-            _ => anyhow::bail!("expected Write variant"),
-        }
-    })();
-
-    restore_env("SIGNER_ID", original_signer);
-    restore_env("SECRET_KEY", original_secret);
-
-    result.expect("env-provided credentials should satisfy a write command");
+    let Command::Write(call) = cli.command else {
+        panic!("expected Write variant");
+    };
+    authorized(&call.signer)
+        .public_key()
+        .expect("credentials should resolve");
 }
 
-/// Run `f` with `SIGNER_ID` cleared and `SECRET_KEY` set to exactly `secret`,
-/// environment mutation serialized, then restore the original values.
-fn with_credential_env<T>(secret: Option<&str>, f: impl FnOnce() -> T) -> T {
+/// Run `f` with `SIGNER_ID` and `SECRET_KEY` set to exactly the given values
+/// (cleared when `None`), environment mutation serialized, then restore the
+/// original values.
+fn with_credential_env<T>(
+    signer_id: Option<&str>,
+    secret: Option<&str>,
+    f: impl FnOnce() -> T,
+) -> T {
     let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
     let original_signer = std::env::var_os("SIGNER_ID");
     let original_secret = std::env::var_os("SECRET_KEY");
-    std::env::remove_var("SIGNER_ID");
-    match secret {
-        Some(secret) => std::env::set_var("SECRET_KEY", secret),
-        None => std::env::remove_var("SECRET_KEY"),
-    }
+    set_env("SIGNER_ID", signer_id.map(OsString::from));
+    set_env("SECRET_KEY", secret.map(OsString::from));
     let result = f();
-    restore_env("SIGNER_ID", original_signer);
-    restore_env("SECRET_KEY", original_secret);
+    set_env("SIGNER_ID", original_signer);
+    set_env("SECRET_KEY", original_secret);
     result
 }
 
-fn restore_env(key: &str, original: Option<std::ffi::OsString>) {
-    match original {
+fn set_env(key: &str, value: Option<OsString>) {
+    match value {
         Some(value) => std::env::set_var(key, value),
         None => std::env::remove_var(key),
     }

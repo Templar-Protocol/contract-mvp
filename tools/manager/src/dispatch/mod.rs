@@ -40,6 +40,7 @@ use crate::commands::{
 use crate::context::{
     all_sources, lazer_source, print_json, pyth_source, redstone_source, CliContext,
 };
+
 /// A kernel price as a plain number.
 ///
 /// Shared by the aggregation dry-run and the reference cross-check, which
