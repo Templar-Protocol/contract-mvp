@@ -369,18 +369,20 @@ mod tests {
     /// Built rather than parsed: an ambient `SECRET_KEY` would otherwise decide
     /// the outcome of the cases that supply none.
     #[rstest::rstest]
-    #[case::plan_ignores_it(Some(PrintFormat::Json), None, true)]
-    #[case::keychain_ignores_it(None, Some(SigningBackend::Keychain), true)]
-    #[case::a_signed_write_uses_it(None, None, false)]
+    #[case::plan_ignores_it(Some(PrintFormat::Json), None, Some(SECRET), true)]
+    #[case::keychain_ignores_it(None, Some(SigningBackend::Keychain), Some(SECRET), true)]
+    #[case::a_signed_write_uses_it(None, None, Some(SECRET), false)]
+    #[case::a_plan_without_one(Some(PrintFormat::Json), None, None, false)]
     fn warns_only_for_a_credential_the_mode_will_not_use(
         #[case] print: Option<PrintFormat>,
         #[case] sign_with: Option<SigningBackend>,
+        #[case] secret_key: Option<&str>,
         #[case] warns: bool,
     ) {
         let signer = SignerArgs {
             signer_id: "signer.testnet".parse().expect("valid account"),
             sign_with,
-            secret_key: Some(SECRET.to_owned()),
+            secret_key: secret_key.map(str::to_owned),
             print,
             public_key: None,
         };

@@ -216,19 +216,44 @@ fn write_fallback_does_not_require_a_lazer_key() {
     );
 }
 
-/// ENG-692: clap applies a conflict to an env-sourced value, so an arg that
-/// declares both fails whenever the variable happens to be exported. Asserted
-/// over clap's metadata, since only the exported shell reproduces it.
+/// ENG-692: clap applies a conflict to an env-sourced value, so an argument
+/// that ends up on either side of one fails whenever the variable happens to be
+/// exported. Both endpoints are checked, since the conflict binds the pair no
+/// matter which of them declares it, as does a group that admits only one
+/// member. `overrides_with` has no public getter and is not covered.
 #[test]
 fn no_argument_pairs_an_env_source_with_a_conflict() {
     fn walk(command: &clap::Command, path: &str) {
+        let from_env: Vec<&clap::Id> = command
+            .get_arguments()
+            .filter(|arg| arg.get_env().is_some())
+            .map(clap::Arg::get_id)
+            .collect();
+
         for arg in command.get_arguments() {
-            assert!(
-                arg.get_env().is_none() || command.get_arg_conflicts_with(arg).is_empty(),
-                "`{path}` declares both an env source and a conflict on `{}`",
-                arg.get_id()
-            );
+            for conflict in command.get_arg_conflicts_with(arg) {
+                assert!(
+                    arg.get_env().is_none() && !from_env.contains(&conflict.get_id()),
+                    "`{path}` conflicts `{}` with `{}`, and one of them reads an env var",
+                    arg.get_id(),
+                    conflict.get_id(),
+                );
+            }
         }
+
+        for group in command.get_groups() {
+            if group.clone().is_multiple() {
+                continue;
+            }
+            for member in group.get_args() {
+                assert!(
+                    !from_env.contains(&member),
+                    "`{path}` puts the env-sourced `{member}` in the exclusive group `{}`",
+                    group.get_id(),
+                );
+            }
+        }
+
         for sub in command.get_subcommands() {
             walk(sub, &format!("{path} {}", sub.get_name()));
         }
